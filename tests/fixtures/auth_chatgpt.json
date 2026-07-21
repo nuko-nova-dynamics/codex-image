@@ -1,0 +1,11 @@
+{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjk5OTk5OTk5OTksImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X2FjY291bnRfaWQiOiJhYWFhYWFhYS1iYmJiLWNjY2MtZGRkZC1lZWVlZWVlZWVlZWUiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InBybyJ9LCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20ifQ.fakesig",
+    "id_token": "eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCJ9.eyJleHAiOiA5OTk5OTk5OTk5LCAiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjogeyJjaGF0Z3B0X2FjY291bnRfaWQiOiAiYWFhYWFhYWEtYmJiYi1jY2NjLWRkZGQtZWVlZWVlZWVlZWVlIiwgImNoYXRncHRfcGxhbl90eXBlIjogInBybyJ9LCAiZW1haWwiOiAidGVzdEBleGFtcGxlLmNvbSJ9.fakesig",
+    "refresh_token": "rt_test_xxxxxxxxxxxxxxxxxxxx",
+    "account_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  },
+  "last_refresh": "2026-04-30T20:26:33.803124Z"
+}

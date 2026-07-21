@@ -1,0 +1,32 @@
+[project]
+name = "codex-image-skill"
+version = "0.1.4"
+description = "Claude Code skill that generates images via gpt-image-2 over ChatGPT OAuth"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+imaging = ["Pillow>=10.0"]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+pythonpath = ["scripts"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Bundled from openai/codex (Apache 2.0); preserve upstream style.
+"scripts/remove_chroma_key.py" = ["ALL"]

@@ -1,0 +1,11 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_1"}}
+
+event: response.image_generation_call.partial_image
+data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"UEFSVElBTA==","partial_image_index":0}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","status":"completed","result":"RklOQUw=","quality":"medium","size":"1024x1024","output_format":"png","background":"opaque","action":"generate","revised_prompt":"A red circle"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"id":"ig_1","type":"image_generation_call","status":"completed","result":"RklOQUw="}]}}

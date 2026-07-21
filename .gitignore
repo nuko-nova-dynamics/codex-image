@@ -1,0 +1,57 @@
+# Skill state — never commit
+.codex-image-home/
+*.auth.json
+auth.json
+
+# Generated images (test runs, examples we don't want to track)
+generated_images/
+test_outputs/
+*.png
+*.jpg
+*.jpeg
+*.webp
+# Re-include intentional examples
+!examples/*.png
+!examples/*.jpg
+!examples/*.webp
+
+# SSE captures (debugging)
+*.sse
+.captures/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Dev-env lockfile (skill payload stays lean; pyproject pins ranges)
+uv.lock
+
+# Node / general
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+.cursor*
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# OS / build artifacts
+*.log
+.tmp/
+tmp/
+dist/
+build/
+*.egg-info/

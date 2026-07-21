@@ -1,0 +1,46 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: ./scripts
+          severity: warning
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Run ruff
+        run: ruff check scripts/
+
+  markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v18
+        with:
+          globs: |
+            CHANGELOG.md
+            README.md
+            SKILL.md
+            SECURITY.md
+            CONTRIBUTING.md
+            references/**/*.md
+            .github/**/*.md
+            !node_modules
