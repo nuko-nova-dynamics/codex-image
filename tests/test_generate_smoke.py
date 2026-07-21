@@ -119,6 +119,53 @@ def test_generate_transparent_chroma_runs_post_process(tmp_path, fixture_dir, fa
     ])
     assert result == 0
     assert "remove_chroma_key.py" in str(seen["cmd"][1])
+    assert "--edge-contract" not in seen["cmd"]
+    assert "--edge-feather" not in seen["cmd"]
+
+
+def test_generate_transparent_edge_flags_pass_through(tmp_path, fixture_dir, fake_sse_with_image, monkeypatch):
+    import generate
+
+    fake_home = tmp_path / "fake-codex-home"
+    fake_home.mkdir()
+    (fake_home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
+    monkeypatch.setenv("CODEX_HOME", str(fake_home))
+    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
+
+    monkeypatch.setattr(generate, "post_responses", lambda **kw: fake_sse_with_image)
+
+    import subprocess
+
+    import transparency
+    monkeypatch.setattr(transparency, "pillow_available", lambda: True)
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        if cmd == ["codex", "--version"]:
+            class VersionResult:
+                stdout = "codex-cli 0.144.6\n"
+
+            return VersionResult()
+        seen["cmd"] = cmd
+        from pathlib import Path
+        Path(cmd[cmd.index("--out") + 1]).write_bytes(b"\x89PNG\r\n\x1a\nALPHAd")
+
+        class R:
+            returncode = 0
+            stderr = ""
+
+        return R()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = generate.main([
+        "a leaf", "--transparent", "--bg-tool", "chroma",
+        "--edge-contract", "1", "--edge-feather", "0.25",
+        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+    ])
+    assert result == 0
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("--edge-contract") + 1] == "1"
+    assert cmd[cmd.index("--edge-feather") + 1] == "0.25"
 
 
 def test_generate_transparent_default_bg_tool_falls_through_to_chroma(

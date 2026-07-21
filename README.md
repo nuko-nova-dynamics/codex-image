@@ -3,8 +3,8 @@
 > A Claude Code skill that generates and edits images with `gpt-image-2`, billed to your ChatGPT subscription. No `OPENAI_API_KEY` required.
 
 [![skills.sh](https://skills.sh/b/nuko-nova-dynamics/codex-image)](https://skills.sh/nuko-nova-dynamics/codex-image)
-[![release](https://img.shields.io/badge/release-v0.1.4-blue)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-131%20passing-success)](#development)
+[![release](https://img.shields.io/badge/release-v0.1.5-blue)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-132%20passing-success)](#development)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Why
@@ -19,7 +19,7 @@ The Codex desktop app and Codex CLI both generate images via `gpt-image-2`, bill
 
 ## Status
 
-**v0.1.4 released** (2026-07-21). 131 tests passing, smoke test green against the real backend.
+**v0.1.5 released** (2026-07-21). 132 tests passing, smoke test green against the real backend.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what's in this release, [`SKILL.md`](SKILL.md) for the contract Claude reads, and [`references/`](references/) for the canonical request recipe and prompting cookbook.
 

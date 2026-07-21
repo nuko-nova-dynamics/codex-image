@@ -4,7 +4,7 @@ description: Generate or edit images with gpt-image-2, billed to the user's Chat
 license: MIT
 metadata:
   author: nuko-nova-dynamics
-  version: "0.1.4"
+  version: "0.1.5"
 ---
 
 # codex-image
@@ -39,6 +39,14 @@ For edits to an explicit file or an older generation, pass `--input <path|url>` 
 
 When the request is a fresh subject — even if phrased "now make…" — pass neither and generate from scratch. If you guess wrong and the user says "no, I meant a new one", re-run without references.
 
+Images the user provides only for style, composition, or mood are **references for a generation, not edit targets** — pass them via `--input` but phrase the prompt as a new image ("in the style of Image 2"). When mixing several inputs, label each by index and role in the prompt (`Image 1: edit target, Image 2: style reference`).
+
+## After generating: look, then report
+
+Before telling the user you're done, view the saved image file and check it against the request: subject, composition, any literal text rendered verbatim, and every constraint the user stated. If something is off, iterate with ONE targeted change (via `--from-last`), re-stating the invariants that must not drift. Don't stack multiple corrections into one re-run, and don't report a path you haven't looked at.
+
+Saving discipline: output defaults to `./generated_images/`. If the image is destined for the user's project, copy or move it to its real place (and update any code that references it) — don't leave a project asset only in the scratch dir. Never overwrite an existing asset the user didn't ask to replace; write a versioned sibling (`hero-v2.png`) instead.
+
 ## Background removal dispatch
 
 When the user wants a transparent background, add `--transparent`. Resolve `--bg-tool` (default `auto`) yourself:
@@ -51,6 +59,8 @@ When the user wants a transparent background, add `--transparent`. Resolve `--bg
 | `auto` (default) | Same two-step Adobe attempt; if no Adobe tool is exposed, pass `--bg-tool=chroma` directly (one step, no error) |
 
 The script never sees `auto` or `adobe` — you resolve those upstream. This is a chroma-key workaround, not native model transparency (`gpt-image-2` rejects `background: "transparent"`); tell the user this the first time they ask for transparency.
+
+After removal, validate the cutout (alpha present, corners transparent, no key-color fringe). A thin fringe → re-run once adding `--edge-contract 1`; stair-stepped edges on matte subjects → `--edge-feather 0.25`. Deeper failure modes: `references/transparent-image-tips.md`.
 
 ## Quality, cost & time guardrails
 

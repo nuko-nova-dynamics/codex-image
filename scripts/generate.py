@@ -23,7 +23,7 @@ import retry as retry_mod
 import sidecar
 import sse_parser
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 
 
 class CodexCliError(RuntimeError):
@@ -184,7 +184,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="auto or hex like #00ff00")
     p.add_argument("--bg-tool", default="auto",
                    choices=["auto", "chroma", "adobe", "none"],
-                   help="Post-process strategy (Claude orchestrates adobe/auto via SKILL.md)")
+                   help="Post-process strategy (the calling agent orchestrates adobe/auto via SKILL.md)")
+    p.add_argument("--edge-contract", type=int, default=None, metavar="PX",
+                   help="Chroma removal: shrink the alpha edge by N px to kill key-color fringe (0-16)")
+    p.add_argument("--edge-feather", type=float, default=None, metavar="RADIUS",
+                   help="Chroma removal: soften the alpha edge; for stair-stepped edges on matte subjects (0-64)")
 
     # Orchestrator params
     p.add_argument("--orchestrator", default="gpt-5.5",
@@ -427,6 +431,10 @@ def main(argv: list[str] | None = None) -> int:
                 "--despill",
                 "--force",
             ]
+            if args.edge_contract is not None:
+                cmd += ["--edge-contract", str(args.edge_contract)]
+            if args.edge_feather is not None:
+                cmd += ["--edge-feather", str(args.edge_feather)]
             try:
                 subprocess.run(cmd, check=True, capture_output=True, text=True)
             except subprocess.CalledProcessError as e:

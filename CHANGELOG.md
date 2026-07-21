@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-07-21
+
+### Added
+
+- `--edge-contract` and `--edge-feather` flags pass through to the bundled chroma-removal helper, enabling the standard fringe-fix retry (`--edge-contract 1`) and edge softening without leaving the CLI. Verified live against the backend.
+- SKILL.md: post-generation validation loop (view the image, check subject/text/constraints, iterate one targeted change), non-destructive save policy (project-bound assets moved into the workspace; versioned siblings instead of overwrites), and reference-vs-edit intent labeling for multi-image inputs.
+
+### Changed
+
+- `references/prompting-cookbook.md` expanded with a prompt-specificity policy (when to augment vs normalize), composition/people guidance, ad-creative template, and per-template tips — adapted from the openai/codex imagegen skill (Apache-2.0), which this skill's chroma helper already comes from.
+- `references/transparent-image-tips.md` now includes the full clean-keying prompt shape, an edge-refinement decision ladder, and notes `gpt-image-1.5 --background transparent` (API-key route) as the true-native-transparency fallback.
+
 ## [0.1.4] - 2026-07-21
 
 ### Added
@@ -102,5 +114,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (regression caught by smoke run; covered by
   `test_plain_webp_does_not_apply_chroma_key`).
 
-[Unreleased]: https://github.com/nuko-nova-dynamics/codex-image/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/nuko-nova-dynamics/codex-image/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/nuko-nova-dynamics/codex-image/releases/tag/v0.1.5
 [0.1.4]: https://github.com/nuko-nova-dynamics/codex-image/releases/tag/v0.1.4
