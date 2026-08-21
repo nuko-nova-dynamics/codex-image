@@ -1,11 +1,32 @@
-"""Chroma-key transparency workflow (spec §8).
+"""Transparency workflows.
 
-Per architecture rule: shell does chroma/none; Adobe MCP routing is Claude's
-responsibility via SKILL.md. This module only handles the chroma path.
+Two paths:
+
+- **native** (default): ask the model for alpha. `background="auto"` plus one
+  sentence appended to the prompt; the backend resolves `auto` to
+  `transparent` and returns RGBA. See docs/adr/0001.
+- **chroma** (fallback): generate on a flat key plate, strip the key locally.
+  Needed for subject classes native transparency is not yet proven on.
+
+Per architecture rule: the shell does chroma/none; Adobe MCP routing is the
+calling agent's responsibility via SKILL.md.
 """
 from __future__ import annotations
 
 import re
+
+# Appended verbatim to the user's prompt on the native path. This is the
+# mechanism, not decoration: the backend resolves background="auto" to
+# "transparent" by reading the prompt.
+#
+# Deliberately contains NO creative constraints. Earlier drafts banned cast
+# shadows, plinths, rectangles and text; those are the user's decisions, not
+# ours. Verified 2026-08-21 that this sentence alone triggers resolution, and
+# that a user-requested drop shadow survives it and lands in the alpha channel.
+NATIVE_TRANSPARENCY_SUFFIX = (
+    "Output the isolated subject on a genuinely transparent background "
+    "with actual alpha."
+)
 
 CHROMA_TEMPLATE = (
     "Create the subject on a perfectly flat solid {key} chroma-key background "
@@ -59,6 +80,41 @@ def pick_key_color(prompt: str) -> str:
 def apply_chroma_key_suffix(prompt: str, key_color: str) -> str:
     """Append the chroma-key template to the user prompt."""
     return f"{prompt}. {CHROMA_TEMPLATE.format(key=key_color)}"
+
+
+def apply_native_transparency_suffix(prompt: str) -> str:
+    """Append the native-transparency request to the user prompt.
+
+    Nothing is stripped or rewritten; the user's text keeps full control of
+    shadow, framing, text and composition.
+    """
+    return f"{prompt.rstrip().rstrip('.')}. {NATIVE_TRANSPARENCY_SUFFIX}"
+
+
+def alpha_summary(image_bytes: bytes) -> dict | None:
+    """Return {'has_alpha': bool, 'transparent_pct': float} or None if unknown.
+
+    Best-effort: returns None when Pillow is absent or the bytes will not
+    decode, because the native path must not require an imaging library.
+    """
+    if not pillow_available():
+        return None
+    from io import BytesIO
+
+    from PIL import Image
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            if "A" not in img.getbands():
+                return {"has_alpha": False, "transparent_pct": 0.0}
+            alpha = img.convert("RGBA").getchannel("A")
+            total = img.width * img.height
+            clear = alpha.histogram()[0]
+            return {
+                "has_alpha": True,
+                "transparent_pct": (100.0 * clear / total) if total else 0.0,
+            }
+    except Exception:
+        return None
 
 
 def warn_subject_key_conflict(prompt: str, key_color: str) -> str | None:

@@ -176,15 +176,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--quality-jpeg", type=_comp("--quality-jpeg"), default=90)
     p.add_argument("--quality-webp", type=_comp("--quality-webp"), default=80)
     p.add_argument("--moderation", default="auto", choices=["auto", "low"])
-    p.add_argument("--background", default="opaque", choices=["opaque", "auto"],
-                   help="(transparent rejected by backend; use --transparent flag instead)")
+    p.add_argument("--background", default="opaque",
+                   choices=["opaque", "auto", "transparent"],
+                   help="Raw passthrough to the image tool. 'transparent' is rejected "
+                        "by this backend (docs/adr/0001); use --transparent instead.")
     p.add_argument("--transparent", action="store_true",
-                   help="Generate with chroma-key + post-process to RGBA (spec §8)")
+                   help="Produce a real alpha channel (native by default)")
+    p.add_argument("--transparent-mode", default=None, choices=["native", "chroma"],
+                   help="native (default): ask the model for alpha, no Pillow needed. "
+                        "chroma: flat key plate + local removal (needs Pillow).")
     p.add_argument("--key-color", default="auto",
-                   help="auto or hex like #00ff00")
-    p.add_argument("--bg-tool", default="auto",
+                   help="auto or hex like #00ff00 (chroma mode only)")
+    p.add_argument("--bg-tool", default=None,
                    choices=["auto", "chroma", "adobe", "none"],
-                   help="Post-process strategy (the calling agent orchestrates adobe/auto via SKILL.md)")
+                   help="Chroma-mode post-process strategy; passing it implies "
+                        "--transparent-mode chroma (the calling agent orchestrates "
+                        "adobe/auto via SKILL.md)")
     p.add_argument("--edge-contract", type=int, default=None, metavar="PX",
                    help="Chroma removal: shrink the alpha edge by N px to kill key-color fringe (0-16)")
     p.add_argument("--edge-feather", type=float, default=None, metavar="RADIUS",
@@ -301,15 +308,30 @@ def main(argv: list[str] | None = None) -> int:
 
     effective_prompt = args.prompt
     is_transparent = bool(args.transparent)
+    effective_background = args.background
 
-    if is_transparent:
-        # Preflight Pillow only when fall-through to chroma is possible
-        if args.bg_tool in ("auto", "chroma"):
-            try:
-                transparency.require_pillow_or_die("--transparent (chroma fallback)")
-            except transparency.ChromaKeyError as e:
-                print(f"✗ {e}", file=sys.stderr)
-                return 2
+    # Resolve the transparency path. Explicit --transparent-mode wins; an
+    # explicit --bg-tool opts into the legacy chroma path (back-compat for
+    # invocations written before native transparency existed); else native.
+    if args.transparent_mode:
+        transparent_mode = args.transparent_mode
+    elif args.bg_tool is not None:
+        transparent_mode = "chroma"
+    else:
+        transparent_mode = "native"
+    bg_tool = args.bg_tool or "auto"
+
+    if args.background == "transparent":
+        print('⚠ --background transparent is rejected by this backend ("Transparent '
+              'background is not supported for this model"). Passing it through '
+              "unchanged; use --transparent for a real alpha channel.", file=sys.stderr)
+
+    if is_transparent and transparent_mode == "chroma" and bg_tool in ("auto", "chroma"):
+        try:
+            transparency.require_pillow_or_die("--transparent-mode chroma")
+        except transparency.ChromaKeyError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            return 2
 
     if args.output_format == "webp":
         try:
@@ -318,13 +340,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"✗ {e}", file=sys.stderr)
             return 2
 
-    if is_transparent:
+    if is_transparent and transparent_mode == "native":
+        # The prompt IS the mechanism: the backend resolves "auto" to
+        # "transparent" by reading it. Never send background="transparent".
+        effective_background = "auto"
+        effective_prompt = transparency.apply_native_transparency_suffix(args.prompt)
+    elif is_transparent:
         key = (args.key_color if args.key_color != "auto"
                else transparency.pick_key_color(args.prompt))
         if msg := transparency.warn_subject_key_conflict(args.prompt, key):
             print(f"⚠ {msg}", file=sys.stderr)
-        print("⚠ transparent: chroma-key workaround — not native model transparency",
-              file=sys.stderr)
+        print("⚠ transparent-mode chroma: key plate + local removal, "
+              "not the model's own alpha", file=sys.stderr)
         effective_prompt = transparency.apply_chroma_key_suffix(args.prompt, key)
 
     body = api_client.build_body(
@@ -332,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         size=args.size,
         quality=args.quality,
         output_format=args.output_format,
-        background=args.background,
+        background=effective_background,
         moderation=args.moderation,
         quality_jpeg=args.quality_jpeg,
         input_images=resolved or None,
@@ -399,10 +426,10 @@ def main(argv: list[str] | None = None) -> int:
     import postprocess
     raw = base64.b64decode(b64)
 
-    if is_transparent:
+    if is_transparent and transparent_mode == "chroma":
         # Resolve --bg-tool. The calling agent normally resolves auto/adobe upstream;
         # if we see auto here, fall through to chroma. adobe direct = error.
-        effective_bg = args.bg_tool
+        effective_bg = bg_tool
         if effective_bg == "auto":
             effective_bg = "chroma"
         elif effective_bg == "adobe":
@@ -460,7 +487,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             stage_path.unlink(missing_ok=True)
     else:
-        # Non-transparent: save directly via postprocess (handles png/jpeg/webp).
+        # Native transparency and ordinary generation both save the returned
+        # bytes directly; postprocess handles png/jpeg/webp encoding.
         try:
             postprocess.save_image(
                 raw_bytes=raw,
@@ -471,6 +499,19 @@ def main(argv: list[str] | None = None) -> int:
         except postprocess.PostprocessError as e:
             print(f"✗ {e}", file=sys.stderr)
             return 1
+
+    if is_transparent and transparent_mode == "native":
+        # Best-effort: the model can ignore the request, usually because the
+        # prompt describes a backdrop. Warn and keep the image — it is already
+        # paid for and may still be useful.
+        summary = transparency.alpha_summary(raw)
+        if summary is not None and not summary["has_alpha"]:
+            print("⚠ transparent requested but the result has no alpha channel; "
+                  "the prompt may describe a background. Re-run with one targeted "
+                  "change, or use --transparent-mode chroma.", file=sys.stderr)
+        elif summary is not None and summary["transparent_pct"] == 0.0:
+            print("⚠ transparent requested but 0.00% of the result is fully "
+                  "transparent; the alpha channel may be unused.", file=sys.stderr)
 
     elapsed = time.monotonic() - started
 
@@ -487,6 +528,9 @@ def main(argv: list[str] | None = None) -> int:
         response_id=meta.get("response_id") or "",
         ts=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         account_id=af.account_id,
+        image_model=meta.get("image_model"),
+        resolved_background=meta.get("resolved_background"),
+        transparency_mode=transparent_mode if is_transparent else None,
     )
     last_path = _codex_image_home() / "last.json"
     sidecar.write_record(record, last_path,

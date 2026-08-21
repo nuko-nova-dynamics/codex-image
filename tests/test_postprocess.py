@@ -80,7 +80,7 @@ def test_transparent_plus_jpeg_rejected_BEFORE_paid_call(tmp_path, fixture_dir, 
 
 
 def test_transparent_plus_webp_runs_chroma_before_conversion(tmp_path, fixture_dir, monkeypatch):
-    """--transparent + --format webp must stage PNG → chroma → convert to WebP."""
+    """Chroma mode + --format webp must stage PNG → chroma → convert to WebP."""
     import subprocess
 
     import generate
@@ -124,7 +124,7 @@ def test_transparent_plus_webp_runs_chroma_before_conversion(tmp_path, fixture_d
 
     out_dir = tmp_path / "out"
     rc = generate.main([
-        "a leaf", "--transparent", "--format", "webp",
+        "a leaf", "--transparent", "--transparent-mode", "chroma", "--format", "webp",
         "--out-dir", str(out_dir), "--quality", "low",
     ])
     assert rc == 0
