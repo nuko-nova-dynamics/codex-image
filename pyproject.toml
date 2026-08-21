@@ -1,6 +1,6 @@
 [project]
 name = "codex-image-skill"
-version = "0.1.5"
+version = "0.2.0"
 description = "Claude Code skill that generates images via gpt-image-2 over ChatGPT OAuth"
 readme = "README.md"
 requires-python = ">=3.10"

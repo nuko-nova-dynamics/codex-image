@@ -4,7 +4,7 @@ description: Generate or edit images with gpt-image-2, billed to the user's Chat
 license: MIT
 metadata:
   author: nuko-nova-dynamics
-  version: "0.1.5"
+  version: "0.2.0"
 ---
 
 # codex-image
@@ -24,7 +24,7 @@ Never invoke a bare relative `scripts/generate.sh`: your working directory is th
 Requirements the script checks for you:
 
 - `python3` ≥ 3.10 on PATH (bash + stdlib Python otherwise).
-- **Pillow — only for `--format webp` and `--transparent`.** Not installed by default; those runs fail fast with the install command (`python3 -m pip install 'Pillow>=10'`). Mention this prerequisite before first use of either flag.
+- **Pillow — only for `--format webp` and `--transparent-mode chroma`.** Not installed by default; those runs fail fast with the install command (`python3 -m pip install 'Pillow>=10'`). Plain `--transparent` does **not** need it. Mention this prerequisite before first use of either.
 - Codex CLI signed in. If it isn't, the script exits with `Run: codex login` — relay that to the user rather than touching auth yourself.
 
 `bash "<skill-dir>/scripts/generate.sh" --help` prints the full flag surface; consult it before improvising flags. Where the host agent supports typed slash commands, `/codex-image "<prompt>" --flags` is user-facing shorthand for exactly this script call.
@@ -47,20 +47,29 @@ Before telling the user you're done, view the saved image file and check it agai
 
 Saving discipline: output defaults to `./generated_images/`. If the image is destined for the user's project, copy or move it to its real place (and update any code that references it) — don't leave a project asset only in the scratch dir. Never overwrite an existing asset the user didn't ask to replace; write a versioned sibling (`hero-v2.png`) instead.
 
-## Background removal dispatch
+## Transparent images
 
-When the user wants a transparent background, add `--transparent`. Resolve `--bg-tool` (default `auto`) yourself:
+When the user wants a transparent background, add `--transparent`. That's it — no dispatch decision, no Pillow, no post-processing step for you to orchestrate.
 
-| `--bg-tool` value | Your action |
+The script asks the model for alpha directly: it sends `background: "auto"` and appends one sentence to the prompt, and the backend returns RGBA. Do **not** pass `--background transparent`; that value is rejected by this backend (`docs/adr/0001-request-transparency-in-the-prompt.md` explains why, and why the obvious "fix" is wrong).
+
+Two things to get right when you write the prompt:
+
+- **Describe the subject, not a scene.** Prompt beats parameter. "A mug on a wooden table in a sunlit studio" may render that studio instead of isolating the mug. Name the subject and its material; leave the surroundings out.
+- **Don't add your own bans.** The suffix deliberately forbids nothing. If the user asked for a drop shadow, let them have it — it comes back rendered into the alpha and composites correctly. Adding "no shadow, no background" yourself overrides their intent.
+
+After generating, view the file and check the alpha actually arrived. The script warns on stderr when the result has no alpha or is fully opaque; treat that as a signal to re-run with ONE targeted change, usually removing scene language.
+
+**Fallback ladder**, only when native disappoints (verified on opaque subjects; hair, glass, smoke and translucency are untested):
+
+| Escalation | Action |
 | --- | --- |
-| `none` | Leave the chroma-keyed PNG as-is; report path to user |
-| `chroma` | Pass `--bg-tool=chroma`; the script runs local chroma-key removal (needs Pillow) |
-| `adobe` | Two steps: (1) run with `--transparent --bg-tool=none` to produce the chroma-keyed PNG. (2) Call whatever Adobe background-removal tool is exposed in this session — the tool id varies by host, so look for an Adobe MCP tool whose name contains `remove_background` (e.g. `image_remove_background` on the Adobe-for-creativity server) and overwrite the file with the alpha result. If no such tool exists, error: "Adobe MCP not available; install adobe-for-creativity or pass --bg-tool=chroma." |
-| `auto` (default) | Same two-step Adobe attempt; if no Adobe tool is exposed, pass `--bg-tool=chroma` directly (one step, no error) |
+| Re-prompt | Strip scene/backdrop language, name the subject alone |
+| Raise quality | `--quality medium` for fine edges and small text |
+| Chroma | `--transparent-mode chroma` (needs Pillow) — you control the key plate |
+| Adobe MCP | `--transparent-mode chroma --bg-tool=none`, then call whatever Adobe background-removal tool this session exposes (look for an MCP tool whose name contains `remove_background`) and overwrite the file with the alpha result. Best option for translucency |
 
-The script never sees `auto` or `adobe` — you resolve those upstream. This is a chroma-key workaround, not native model transparency (`gpt-image-2` rejects `background: "transparent"`); tell the user this the first time they ask for transparency.
-
-After removal, validate the cutout (alpha present, corners transparent, no key-color fringe). A thin fringe → re-run once adding `--edge-contract 1`; stair-stepped edges on matte subjects → `--edge-feather 0.25`. Deeper failure modes: `references/transparent-image-tips.md`.
+Chroma edge repair: thin fringe → `--edge-contract 1`; stair-stepped edges on matte subjects → `--edge-feather 0.25`. Deeper failure modes: `references/transparent-image-tips.md`.
 
 ## Quality, cost & time guardrails
 
@@ -82,8 +91,14 @@ bash "<skill-dir>/scripts/generate.sh" "now add steam rising" --from-last
 # Edit an explicit reference image
 bash "<skill-dir>/scripts/generate.sh" "make it blue" --input ./mug.png
 
-# Transparent background (chroma-key; needs Pillow)
+# Transparent background (native alpha from the model; no Pillow)
 bash "<skill-dir>/scripts/generate.sh" "a coffee mug" --transparent
+
+# Transparent, with a shadow the user asked for (survives into the alpha)
+bash "<skill-dir>/scripts/generate.sh" "a coffee mug with a soft drop shadow" --transparent
+
+# Chroma fallback, when native disappoints (needs Pillow)
+bash "<skill-dir>/scripts/generate.sh" "a glass jar" --transparent --transparent-mode chroma
 
 # Different size / format / quality
 bash "<skill-dir>/scripts/generate.sh" "hero banner" --size 2048x1152 --format webp --quality low
@@ -104,6 +119,8 @@ For production logo/brand work, do invoke — but set expectations: generate exp
 
 When you need more depth, read from `<skill-dir>/references/`:
 
-- `api-recipe.md` — canonical request body, headers, rejected fields, SSE parsing
+- `api-recipe.md` — canonical request body, headers, rejected fields, transparency mechanism, SSE parsing
 - `prompting-cookbook.md` — prompting fundamentals + use-case templates (logo, product shot, UI mockup, infographic)
-- `transparent-image-tips.md` — when chroma-key fails and what to do
+- `transparent-image-tips.md` — how native transparency works, when it struggles, and the chroma fallback
+
+Repo-level context: `CONTEXT.md` (glossary — the three transports are defined there) and `docs/adr/` (why transparency is requested in the prompt rather than the parameter).

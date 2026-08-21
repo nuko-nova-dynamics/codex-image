@@ -23,7 +23,7 @@ import retry as retry_mod
 import sidecar
 import sse_parser
 
-VERSION = "0.1.5"
+VERSION = "0.2.0"
 
 
 class CodexCliError(RuntimeError):
