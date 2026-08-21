@@ -39,8 +39,10 @@ def extract_image_b64(raw: str) -> tuple[str, str]:
     """Walk the full stream, accumulate candidates, return (b64, source_name).
 
     Priority (per spec §4):
-    1. response.output_item.done with image_generation_call (status: completed)
+    1. response.output_item.done with image_generation_call carrying a result
+       (any status — the backend reports "generating" on finished items)
     2. response.completed.response.output[*] for image_generation_call
+       (may be an empty list on this backend)
     3. last response.image_generation_call.partial_image — only if 1 & 2 are
        missing and the stream includes response.completed
 
@@ -61,7 +63,12 @@ def extract_image_b64(raw: str) -> tuple[str, str]:
             failure_message = f"{code}: {msg}".strip(": ")
         elif ev_type == "response.output_item.done":
             item = ev.get("item") or {}
-            if item.get("type") == "image_generation_call" and item.get("status") == "completed":
+            # Accept the result whenever one is present, regardless of `status`.
+            # The Codex backend emits output_item.done carrying the finished
+            # image while still reporting status="generating" (observed on live
+            # streams 2026-08-21), so gating on status=="completed" silently
+            # demoted real results to the partial_image fallback.
+            if item.get("type") == "image_generation_call":
                 if result := item.get("result"):
                     final_from_item_done = result
         elif ev_type == "response.completed":

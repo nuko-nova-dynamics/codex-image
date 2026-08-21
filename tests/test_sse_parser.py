@@ -53,3 +53,13 @@ def test_extract_raises_when_stream_has_no_image():
     raw = "event: response.created\ndata: {}\n\n"
     with pytest.raises(ParseError, match="no image"):
         extract_image_b64(raw)
+
+
+def test_extract_accepts_result_when_status_is_generating(fixture_dir):
+    """Real backend shape: output_item.done carries the result while still
+    reporting status='generating', and response.completed.output is empty.
+    Observed twice on live streams (2026-08-21)."""
+    raw = (fixture_dir / "sse_generating_status.txt").read_text()
+    b64, source = extract_image_b64(raw)
+    assert b64 == "RklOQUw="
+    assert source == "output_item.done"
