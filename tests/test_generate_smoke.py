@@ -622,3 +622,93 @@ def test_transparent_mode_chroma_runs_post_process(
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ]) == 0
     assert "remove_chroma_key.py" in str(seen["cmd"][1])
+
+
+def test_transparent_mode_alone_implies_transparent(tmp_path, fixture_dir, monkeypatch):
+    """--transparent-mode without --transparent used to be inert: it spent a
+    generation and returned an opaque image with no warning."""
+    import generate
+    import transparency
+    _env(tmp_path, fixture_dir, monkeypatch)
+
+    captured = {}
+
+    def fake_post(*, body, headers, endpoint=None, timeout=None):
+        captured["body"] = body
+        return _sse(_png_b64("RGBA"))
+
+    monkeypatch.setattr(generate, "post_responses", fake_post)
+    _no_chroma_subprocess(monkeypatch)
+
+    assert generate.main([
+        "a red mug", "--transparent-mode", "native",
+        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+    ]) == 0
+    assert captured["body"]["tools"][0]["background"] == "auto"
+    text = captured["body"]["input"][0]["content"][-1]["text"]
+    assert text.endswith(transparency.NATIVE_TRANSPARENCY_SUFFIX)
+
+
+def test_transparent_plus_background_transparent_is_rejected_before_post(
+    tmp_path, fixture_dir, monkeypatch, capsys
+):
+    """The two flags contradict each other; erroring beats printing a message
+    that says 'passed through unchanged' and then not doing that."""
+    import generate
+    _env(tmp_path, fixture_dir, monkeypatch)
+
+    def exploding_post(**kw):
+        raise AssertionError("must not spend a generation on a contradictory request")
+
+    monkeypatch.setattr(generate, "post_responses", exploding_post)
+
+    rc = generate.main([
+        "a red mug", "--transparent", "--background", "transparent",
+        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+    ])
+    assert rc == 1
+    err = capsys.readouterr().err.lower()
+    assert "--transparent" in err and "--background transparent" in err
+
+
+def test_bg_tool_adobe_is_rejected_before_post(tmp_path, fixture_dir, monkeypatch, capsys):
+    """Previously this paid for an image and then exited 2 with nothing saved."""
+    import generate
+    _env(tmp_path, fixture_dir, monkeypatch)
+
+    def exploding_post(**kw):
+        raise AssertionError("must not spend a generation before rejecting --bg-tool=adobe")
+
+    monkeypatch.setattr(generate, "post_responses", exploding_post)
+
+    out_dir = tmp_path / "out"
+    rc = generate.main([
+        "a mug", "--transparent", "--bg-tool", "adobe",
+        "--out-dir", str(out_dir), "--quality", "low",
+    ])
+    assert rc == 2
+    assert "adobe" in capsys.readouterr().err.lower()
+    assert not list(out_dir.glob("*.png"))
+
+
+def test_alpha_warning_works_without_pillow(tmp_path, fixture_dir, monkeypatch, capsys):
+    """The native path advertises itself as stdlib-only, so the 'did I actually
+    get alpha' signal must not depend on Pillow. resolved_background is free."""
+    import generate
+    import transparency
+    _env(tmp_path, fixture_dir, monkeypatch)
+    _no_chroma_subprocess(monkeypatch)
+    monkeypatch.setattr(transparency, "pillow_available", lambda: False)
+    monkeypatch.setattr(
+        generate, "post_responses",
+        lambda **kw: _sse(_png_b64("RGB"), background="opaque"),
+    )
+
+    out_dir = tmp_path / "out"
+    assert generate.main([
+        "a red mug on a wooden table", "--transparent",
+        "--out-dir", str(out_dir), "--quality", "low",
+    ]) == 0
+    assert list(out_dir.glob("*.png")), "image must still be saved"
+    err = capsys.readouterr().err.lower()
+    assert "transparent" in err and "opaque" in err

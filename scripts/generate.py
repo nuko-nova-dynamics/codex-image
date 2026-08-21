@@ -224,11 +224,41 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
 
+    # --transparent-mode and --bg-tool are only meaningful alongside --transparent.
+    # Treat either as opting in, so they can never be silently inert (which used
+    # to spend a generation and return an opaque image with no warning).
+    is_transparent = bool(args.transparent or args.transparent_mode or args.bg_tool)
+
+    # Resolve the transparency path. Explicit --transparent-mode wins; an
+    # explicit --bg-tool opts into the legacy chroma path (back-compat for
+    # invocations written before native transparency existed); else native.
+    if args.transparent_mode:
+        transparent_mode = args.transparent_mode
+    elif args.bg_tool is not None:
+        transparent_mode = "chroma"
+    else:
+        transparent_mode = "native"
+    bg_tool = args.bg_tool or "auto"
+
     # Reject impossible combos BEFORE auth/POST so users don't burn credits.
-    if args.transparent and args.output_format == "jpeg":
+    if is_transparent and args.output_format == "jpeg":
         print("✗ --transparent + --format jpeg: JPEG does not support alpha. "
               "Use --format png or --format webp.", file=sys.stderr)
         return 1
+
+    if is_transparent and args.background == "transparent":
+        print("✗ --transparent + --background transparent contradict each other. "
+              "--transparent sends background=auto (the only value that works on "
+              "this backend); --background transparent asks to send a value the "
+              "backend rejects. Pick one. See docs/adr/0001.", file=sys.stderr)
+        return 1
+
+    if is_transparent and transparent_mode == "chroma" and bg_tool == "adobe":
+        print("✗ --bg-tool=adobe must be resolved by the calling agent via MCP before "
+              "invoking this script. Use --bg-tool=none here (to keep the key plate) "
+              "or --bg-tool=chroma, then apply the Adobe removal yourself. "
+              "See SKILL.md's fallback ladder.", file=sys.stderr)
+        return 2
 
     # 1. Auth
     auth_path = auth_mod.discover_auth_file()
@@ -307,24 +337,13 @@ def main(argv: list[str] | None = None) -> int:
     import transparency
 
     effective_prompt = args.prompt
-    is_transparent = bool(args.transparent)
     effective_background = args.background
-
-    # Resolve the transparency path. Explicit --transparent-mode wins; an
-    # explicit --bg-tool opts into the legacy chroma path (back-compat for
-    # invocations written before native transparency existed); else native.
-    if args.transparent_mode:
-        transparent_mode = args.transparent_mode
-    elif args.bg_tool is not None:
-        transparent_mode = "chroma"
-    else:
-        transparent_mode = "native"
-    bg_tool = args.bg_tool or "auto"
 
     if args.background == "transparent":
         print('⚠ --background transparent is rejected by this backend ("Transparent '
               'background is not supported for this model"). Passing it through '
-              "unchanged; use --transparent for a real alpha channel.", file=sys.stderr)
+              "unchanged so you see the real error; use --transparent for a real "
+              "alpha channel.", file=sys.stderr)
 
     if is_transparent and transparent_mode == "chroma" and bg_tool in ("auto", "chroma"):
         try:
@@ -429,17 +448,8 @@ def main(argv: list[str] | None = None) -> int:
     if is_transparent and transparent_mode == "chroma":
         # Resolve --bg-tool. The calling agent normally resolves auto/adobe upstream;
         # if we see auto here, fall through to chroma. adobe direct = error.
-        effective_bg = bg_tool
-        if effective_bg == "auto":
-            effective_bg = "chroma"
-        elif effective_bg == "adobe":
-            print(
-                "✗ --bg-tool=adobe must be resolved by the calling agent via MCP before "
-                "invoking this script. Use --bg-tool=chroma here, or rely on SKILL.md's "
-                "Adobe-availability check.",
-                file=sys.stderr,
-            )
-            return 2
+        # adobe is rejected in preflight, before the paid POST.
+        effective_bg = "chroma" if bg_tool == "auto" else bg_tool
 
         # Stage to a temporary PNG so the chroma script gets PNG input.
         stage_path = target.with_suffix(".stage.png")
@@ -501,17 +511,27 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if is_transparent and transparent_mode == "native":
-        # Best-effort: the model can ignore the request, usually because the
-        # prompt describes a backdrop. Warn and keep the image — it is already
-        # paid for and may still be useful.
-        summary = transparency.alpha_summary(raw)
-        if summary is not None and not summary["has_alpha"]:
-            print("⚠ transparent requested but the result has no alpha channel; "
-                  "the prompt may describe a background. Re-run with one targeted "
+        # The model can ignore the request, usually because the prompt describes
+        # a backdrop. Warn and keep the image — it is already paid for.
+        #
+        # Primary signal is the backend's own resolved background, which is free
+        # and needs no imaging library. That matters: the native path advertises
+        # itself as stdlib-only, so a Pillow-gated check would be silently absent
+        # on exactly the configuration this release recommends.
+        resolved_bg = meta.get("resolved_background")
+        summary = transparency.alpha_summary(raw)  # refinement; None without Pillow
+        if resolved_bg == "opaque" or (summary is not None and not summary["has_alpha"]):
+            print(f"⚠ transparent requested but the backend resolved background="
+                  f"{resolved_bg or 'unknown'} and the result carries no usable alpha. "
+                  "The prompt may describe a background. Re-run with one targeted "
                   "change, or use --transparent-mode chroma.", file=sys.stderr)
         elif summary is not None and summary["transparent_pct"] == 0.0:
             print("⚠ transparent requested but 0.00% of the result is fully "
                   "transparent; the alpha channel may be unused.", file=sys.stderr)
+        elif resolved_bg is None and summary is None:
+            print("⚠ could not confirm the result has alpha: the backend reported no "
+                  "background mode and Pillow is unavailable for a local check.",
+                  file=sys.stderr)
 
     elapsed = time.monotonic() - started
 

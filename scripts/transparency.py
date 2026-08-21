@@ -86,9 +86,14 @@ def apply_native_transparency_suffix(prompt: str) -> str:
     """Append the native-transparency request to the user prompt.
 
     Nothing is stripped or rewritten; the user's text keeps full control of
-    shadow, framing, text and composition.
+    shadow, framing, text and composition. Existing terminal punctuation is
+    preserved as-is, so "a mug?" does not become "a mug?." and an abbreviation
+    like "U.S.A." keeps its final period.
     """
-    return f"{prompt.rstrip().rstrip('.')}. {NATIVE_TRANSPARENCY_SUFFIX}"
+    stem = prompt.rstrip()
+    if stem.endswith((".", "?", "!")):
+        return f"{stem} {NATIVE_TRANSPARENCY_SUFFIX}"
+    return f"{stem}. {NATIVE_TRANSPARENCY_SUFFIX}"
 
 
 def alpha_summary(image_bytes: bytes) -> dict | None:

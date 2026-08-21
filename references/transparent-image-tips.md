@@ -35,7 +35,7 @@ If a cutout disappoints, escalate in this order:
 1. **Re-prompt.** Strip scene and backdrop language; name the subject and nothing else.
 2. **Raise quality.** `--quality medium` for fine edges and small text.
 3. **Chroma fallback.** `--transparent-mode chroma` (needs Pillow). You control the key plate, which helps when the model insists on grounding the subject with a shadow you do not want.
-4. **Adobe MCP.** `--transparent-mode chroma --bg-tool adobe`. Better than chroma-key on translucency.
+4. **Adobe MCP.** `--transparent-mode chroma --bg-tool=none` to keep the un-stripped key plate, then apply the Adobe background-removal tool yourself and overwrite the file. Better than chroma-key on translucency. `--bg-tool=adobe` is **not** a thing the script can do; it is rejected in preflight, because the MCP call has to happen in the calling agent.
 
 ## Chroma fallback details
 

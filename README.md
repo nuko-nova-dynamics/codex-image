@@ -4,7 +4,7 @@
 
 [![skills.sh](https://skills.sh/b/nuko-nova-dynamics/codex-image)](https://skills.sh/nuko-nova-dynamics/codex-image)
 [![release](https://img.shields.io/badge/release-v0.2.0-blue)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-132%20passing-success)](#development)
+[![tests](https://img.shields.io/badge/tests-148%20passing-success)](#development)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Why
@@ -19,7 +19,7 @@ The Codex desktop app and Codex CLI both generate images via `gpt-image-2`, bill
 
 ## Status
 
-**v0.2.0 released** (2026-08-21). Native model transparency; `--transparent` no longer needs Pillow. 143 tests passing, verified live against the real backend.
+**v0.2.0 released** (2026-08-21). Native model transparency; `--transparent` no longer needs Pillow. 148 tests passing, and the native path was confirmed live against the real backend (genuine alpha, with a user-requested drop shadow surviving into the alpha channel).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what's in this release, [`SKILL.md`](SKILL.md) for the contract Claude reads, and [`references/`](references/) for the canonical request recipe and prompting cookbook.
 
@@ -118,7 +118,7 @@ ruff check scripts/
 # Unit tests (offline, mocked HTTP)
 python3 -m pytest tests/ -q
 
-# End-to-end smoke test (real backend, ~5 generations, needs codex login + Pillow)
+# End-to-end smoke test (real backend, ~6 generations, needs codex login + Pillow)
 ./tests/smoke.sh
 ```
 

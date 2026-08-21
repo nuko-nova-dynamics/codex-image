@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--transparent-mode {native,chroma}`, defaulting to `native`. The chroma path survives as an explicit fallback for subject classes native transparency is unverified on (hair, fur, smoke, glass, translucency). Passing `--bg-tool` implies chroma mode, so pre-0.2.0 invocations still route as before.
-- Best-effort alpha verification. A transparent request whose result has no alpha channel, or an entirely opaque one, warns on stderr and still saves — the image is already paid for.
+- Alpha verification after a transparent run. The primary signal is the backend's own resolved background mode, which is free and needs no imaging library — important, because the native path is stdlib-only and a Pillow-gated check would be silently absent on exactly the recommended configuration. A local alpha scan refines it when Pillow is present. A result with no usable alpha warns on stderr and still saves; the image is already paid for.
+- Contradictory and impossible flag combinations are now rejected in preflight, before the paid request: `--transparent --format jpeg`, `--transparent --background transparent`, and `--bg-tool=adobe`. The last one previously spent a generation and then exited without saving anything.
+- `--transparent-mode` and `--bg-tool` imply `--transparent`. Passing either alone used to be inert: it spent a generation, returned an opaque image, and warned about nothing.
 - The resolved image model and background mode are recorded in the sidecar. This replaces a "gpt-image-2" claim the skill had been repeating across three files without ever observing it; the backend actually routes to `gpt-image-2-codex`, which is why the transparent parameter is refused.
 - `CONTEXT.md` glossary and `docs/adr/`. The glossary names the three transports that reach OpenAI image models, which is the distinction that makes this whole area confusing.
 
