@@ -44,15 +44,20 @@ print(f'  OK {imgs[-1]} is RGBA, {pct:.1f}%% clear, model={meta[\"image_model\"]
 "
 
 echo "4b. transparent (chroma fallback)"
-"$GEN" "a green leaf" --out-dir "$OUT" --quality low --transparent-mode chroma
+# "leaf" is a green-family keyword, so this also exercises automatic key-colour
+# selection (it should pick magenta, not #00ff00). Deliberately NOT "a green
+# leaf": that filename would also match step 5's *green*.png assertion.
+"$GEN" "a maple leaf" --out-dir "$OUT" --quality low --transparent-mode chroma
 python3 -c "
 from PIL import Image
-import glob
+import glob, json
 imgs = sorted(glob.glob('$OUT/*leaf*.png'))
 assert imgs, 'no chroma PNG found'
 img = Image.open(imgs[-1])
 assert img.mode == 'RGBA', f'expected RGBA, got {img.mode}'
-print(f'  OK {imgs[-1]} is RGBA')
+meta = json.load(open(imgs[-1] + '.json'))
+assert meta['transparency_mode'] == 'chroma', meta['transparency_mode']
+print(f'  OK {imgs[-1]} is RGBA via chroma')
 "
 
 echo "5. multi-turn (--from-last)"

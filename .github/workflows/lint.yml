@@ -41,6 +41,9 @@ jobs:
             SKILL.md
             SECURITY.md
             CONTRIBUTING.md
+            CONTEXT.md
+            AGENTS.md
             references/**/*.md
+            docs/**/*.md
             .github/**/*.md
             !node_modules
