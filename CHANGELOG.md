@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- CI markdownlint now covers `AGENTS.md`, `CONTEXT.md`, and `docs/**/*.md` — 17 files instead of 14. The files added in 0.2.0 were only ever linted by hand.
+
+### Fixed
+
+- Smoke test: the chroma case used "a green leaf", whose output filename also matches step 5's `*green*.png` assertion, so the `--from-last` step could pass without producing anything. Renamed to "a maple leaf" (still a green-family keyword, so automatic key-colour selection is still exercised), and both transparency cases now assert `transparency_mode` from the sidecar rather than trusting filename globs.
+
 ## [0.2.0] - 2026-08-21
 
 ### Changed
