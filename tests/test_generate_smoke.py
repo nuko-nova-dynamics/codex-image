@@ -168,9 +168,11 @@ def test_generate_transparent_edge_flags_pass_through(tmp_path, fixture_dir, fak
     assert cmd[cmd.index("--edge-feather") + 1] == "0.25"
 
 
-def test_generate_transparent_default_bg_tool_falls_through_to_chroma(
+def test_generate_transparent_defaults_to_native_not_chroma(
     tmp_path, fixture_dir, fake_sse_with_image, monkeypatch
 ):
+    """Behaviour change in 0.2.0: bare --transparent asks the model for alpha
+    instead of running the chroma-key post-process."""
     import generate
 
     fake_home = tmp_path / "fake-codex-home"
@@ -209,7 +211,7 @@ def test_generate_transparent_default_bg_tool_falls_through_to_chroma(
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ])
     assert result == 0
-    assert seen["called"], "default --bg-tool=auto should fall through to chroma when running directly"
+    assert not seen["called"], "bare --transparent must not run the chroma post-process"
 
 
 def test_generate_transparent_bg_tool_adobe_errors_in_shell(
@@ -398,3 +400,315 @@ def test_incomplete_partial_stream_is_not_saved(
     assert result != 0
     assert "incomplete stream" in capsys.readouterr().err.lower()
     assert not out_dir.exists()
+
+
+# --- native transparency (v0.2.0) -------------------------------------------
+
+def _png_b64(mode: str) -> str:
+    """Real 8x8 PNG in the requested mode, base64-encoded."""
+    from io import BytesIO
+
+    from PIL import Image
+    img = Image.new(mode, (8, 8), (255, 0, 0, 0) if mode == "RGBA" else (255, 0, 0))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _sse(result_b64: str, *, background: str = "transparent",
+         model: str | None = "gpt-image-2-codex") -> str:
+    tools = (
+        f'"tools":[{{"type":"image_generation","background":"auto","model":"{model}"}}]'
+        if model else '"tools":[]'
+    )
+    return (
+        "event: response.created\n"
+        f'data: {{"type":"response.created","response":{{"id":"resp_9",{tools}}}}}\n\n'
+        "event: response.output_item.done\n"
+        'data: {"type":"response.output_item.done","item":{"id":"ig_9",'
+        '"type":"image_generation_call","status":"generating",'
+        f'"result":"{result_b64}","quality":"medium","size":"1536x1024",'
+        f'"output_format":"png","background":"{background}","action":"generate",'
+        '"revised_prompt":"X"}}\n\n'
+        "event: response.completed\n"
+        f'data: {{"type":"response.completed","response":{{"id":"resp_9","output":[],{tools}}}}}\n\n'
+    )
+
+
+def _env(tmp_path, fixture_dir, monkeypatch):
+    fake_home = tmp_path / "fake-codex-home"
+    fake_home.mkdir()
+    (fake_home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
+    monkeypatch.setenv("CODEX_HOME", str(fake_home))
+    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
+
+
+def _no_chroma_subprocess(monkeypatch):
+    """Stub codex --version; blow up if anything tries to run the chroma helper."""
+    import subprocess
+    calls = []
+
+    def fake_run(cmd, **kw):
+        if cmd == ["codex", "--version"]:
+            class V:
+                stdout = "codex-cli 0.149.0\n"
+            return V()
+        calls.append(cmd)
+        raise AssertionError(f"unexpected subprocess on the native path: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_transparent_sends_background_auto_and_appends_suffix(
+    tmp_path, fixture_dir, monkeypatch
+):
+    """Native transparency is requested via background=auto plus a prompt
+    sentence. background=transparent 400s on this transport."""
+    import generate
+    import transparency
+    _env(tmp_path, fixture_dir, monkeypatch)
+    _no_chroma_subprocess(monkeypatch)
+
+    captured = {}
+
+    def fake_post(*, body, headers, endpoint=None, timeout=None):
+        captured["body"] = body
+        return _sse(_png_b64("RGBA"))
+
+    monkeypatch.setattr(generate, "post_responses", fake_post)
+
+    assert generate.main([
+        "a red mug", "--transparent",
+        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+    ]) == 0
+
+    tool = captured["body"]["tools"][0]
+    assert tool["background"] == "auto"
+    text = captured["body"]["input"][0]["content"][-1]["text"]
+    assert text.startswith("a red mug")
+    assert text.endswith(transparency.NATIVE_TRANSPARENCY_SUFFIX)
+
+
+def test_transparent_suffix_states_no_creative_constraints(monkeypatch):
+    """The suffix must not smuggle in art direction — the user owns shadow,
+    framing and text."""
+    import transparency
+    suffix = transparency.NATIVE_TRANSPARENCY_SUFFIX.lower()
+    for banned in ("no cast shadow", "no shadow", "no plinth", "no rectangle",
+                   "no text", "no label", "chroma", "#00ff00"):
+        assert banned not in suffix
+
+
+def test_transparent_native_writes_returned_bytes_unmodified(
+    tmp_path, fixture_dir, monkeypatch
+):
+    import generate
+    _env(tmp_path, fixture_dir, monkeypatch)
+    _no_chroma_subprocess(monkeypatch)
+
+    payload = _png_b64("RGBA")
+    monkeypatch.setattr(generate, "post_responses", lambda **kw: _sse(payload))
+
+    out_dir = tmp_path / "out"
+    assert generate.main([
+        "a red mug", "--transparent",
+        "--out-dir", str(out_dir), "--quality", "low",
+    ]) == 0
+
+    pngs = list(out_dir.glob("*.png"))
+    assert len(pngs) == 1
+    assert pngs[0].read_bytes() == base64.b64decode(payload)
+
+
+def test_sidecar_records_image_model_and_resolved_background(
+    tmp_path, fixture_dir, monkeypatch
+):
+    import generate
+    _env(tmp_path, fixture_dir, monkeypatch)
+    _no_chroma_subprocess(monkeypatch)
+    monkeypatch.setattr(generate, "post_responses", lambda **kw: _sse(_png_b64("RGBA")))
+
+    out_dir = tmp_path / "out"
+    assert generate.main([
+        "a red mug", "--transparent",
+        "--out-dir", str(out_dir), "--quality", "low",
+    ]) == 0
+
+    sidecar = next(out_dir.glob("*.png.json"))
+    data = json.loads(sidecar.read_text())
+    assert data["image_model"] == "gpt-image-2-codex"
+    assert data["resolved_background"] == "transparent"
+
+
+def test_transparent_warns_when_result_has_no_alpha(
+    tmp_path, fixture_dir, monkeypatch, capsys
+):
+    """A flat RGB result still saves — the user already paid for it — but the
+    agent needs a signal to retry."""
+    import generate
+    _env(tmp_path, fixture_dir, monkeypatch)
+    _no_chroma_subprocess(monkeypatch)
+    monkeypatch.setattr(
+        generate, "post_responses",
+        lambda **kw: _sse(_png_b64("RGB"), background="opaque"),
+    )
+
+    out_dir = tmp_path / "out"
+    assert generate.main([
+        "a red mug", "--transparent",
+        "--out-dir", str(out_dir), "--quality", "low",
+    ]) == 0
+    assert list(out_dir.glob("*.png")), "image must still be saved"
+    err = capsys.readouterr().err.lower()
+    assert "transparent" in err and "alpha" in err
+
+
+def test_background_transparent_is_passed_through_unrewritten(
+    tmp_path, fixture_dir, monkeypatch, capsys
+):
+    """Never silently substitute a value the user explicitly typed."""
+    import generate
+    _env(tmp_path, fixture_dir, monkeypatch)
+    _no_chroma_subprocess(monkeypatch)
+
+    captured = {}
+
+    def fake_post(*, body, headers, endpoint=None, timeout=None):
+        captured["body"] = body
+        return _sse(_png_b64("RGBA"))
+
+    monkeypatch.setattr(generate, "post_responses", fake_post)
+
+    assert generate.main([
+        "a red mug", "--background", "transparent",
+        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+    ]) == 0
+    assert captured["body"]["tools"][0]["background"] == "transparent"
+    assert "--transparent" in capsys.readouterr().err
+
+
+def test_transparent_mode_chroma_runs_post_process(
+    tmp_path, fixture_dir, monkeypatch
+):
+    """The chroma path survives as an explicit, named fallback."""
+    import generate
+    import transparency
+    _env(tmp_path, fixture_dir, monkeypatch)
+    monkeypatch.setattr(transparency, "pillow_available", lambda: True)
+    monkeypatch.setattr(generate, "post_responses", lambda **kw: _sse(_png_b64("RGBA")))
+
+    import subprocess
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        if cmd == ["codex", "--version"]:
+            class V:
+                stdout = "codex-cli 0.149.0\n"
+            return V()
+        seen["cmd"] = cmd
+        from pathlib import Path
+        Path(cmd[cmd.index("--out") + 1]).write_bytes(b"\x89PNG\r\n\x1a\nALPHA")
+
+        class R:
+            returncode = 0
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert generate.main([
+        "a leaf", "--transparent", "--transparent-mode", "chroma",
+        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+    ]) == 0
+    assert "remove_chroma_key.py" in str(seen["cmd"][1])
+
+
+def test_transparent_mode_alone_implies_transparent(tmp_path, fixture_dir, monkeypatch):
+    """--transparent-mode without --transparent used to be inert: it spent a
+    generation and returned an opaque image with no warning."""
+    import generate
+    import transparency
+    _env(tmp_path, fixture_dir, monkeypatch)
+
+    captured = {}
+
+    def fake_post(*, body, headers, endpoint=None, timeout=None):
+        captured["body"] = body
+        return _sse(_png_b64("RGBA"))
+
+    monkeypatch.setattr(generate, "post_responses", fake_post)
+    _no_chroma_subprocess(monkeypatch)
+
+    assert generate.main([
+        "a red mug", "--transparent-mode", "native",
+        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+    ]) == 0
+    assert captured["body"]["tools"][0]["background"] == "auto"
+    text = captured["body"]["input"][0]["content"][-1]["text"]
+    assert text.endswith(transparency.NATIVE_TRANSPARENCY_SUFFIX)
+
+
+def test_transparent_plus_background_transparent_is_rejected_before_post(
+    tmp_path, fixture_dir, monkeypatch, capsys
+):
+    """The two flags contradict each other; erroring beats printing a message
+    that says 'passed through unchanged' and then not doing that."""
+    import generate
+    _env(tmp_path, fixture_dir, monkeypatch)
+
+    def exploding_post(**kw):
+        raise AssertionError("must not spend a generation on a contradictory request")
+
+    monkeypatch.setattr(generate, "post_responses", exploding_post)
+
+    rc = generate.main([
+        "a red mug", "--transparent", "--background", "transparent",
+        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+    ])
+    assert rc == 1
+    err = capsys.readouterr().err.lower()
+    assert "--transparent" in err and "--background transparent" in err
+
+
+def test_bg_tool_adobe_is_rejected_before_post(tmp_path, fixture_dir, monkeypatch, capsys):
+    """Previously this paid for an image and then exited 2 with nothing saved."""
+    import generate
+    _env(tmp_path, fixture_dir, monkeypatch)
+
+    def exploding_post(**kw):
+        raise AssertionError("must not spend a generation before rejecting --bg-tool=adobe")
+
+    monkeypatch.setattr(generate, "post_responses", exploding_post)
+
+    out_dir = tmp_path / "out"
+    rc = generate.main([
+        "a mug", "--transparent", "--bg-tool", "adobe",
+        "--out-dir", str(out_dir), "--quality", "low",
+    ])
+    assert rc == 2
+    assert "adobe" in capsys.readouterr().err.lower()
+    assert not list(out_dir.glob("*.png"))
+
+
+def test_alpha_warning_works_without_pillow(tmp_path, fixture_dir, monkeypatch, capsys):
+    """The native path advertises itself as stdlib-only, so the 'did I actually
+    get alpha' signal must not depend on Pillow. resolved_background is free."""
+    import generate
+    import transparency
+    _env(tmp_path, fixture_dir, monkeypatch)
+    _no_chroma_subprocess(monkeypatch)
+    monkeypatch.setattr(transparency, "pillow_available", lambda: False)
+    monkeypatch.setattr(
+        generate, "post_responses",
+        lambda **kw: _sse(_png_b64("RGB"), background="opaque"),
+    )
+
+    out_dir = tmp_path / "out"
+    assert generate.main([
+        "a red mug on a wooden table", "--transparent",
+        "--out-dir", str(out_dir), "--quality", "low",
+    ]) == 0
+    assert list(out_dir.glob("*.png")), "image must still be saved"
+    err = capsys.readouterr().err.lower()
+    assert "transparent" in err and "opaque" in err

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-21
+
+### Changed
+
+- **`--transparent` now produces the model's own alpha channel instead of a chroma-keyed approximation.** Existing invocations are unchanged and keep working, but the artifact you get back is different and produced by a different mechanism. The request sends `background: "auto"` with a one-sentence transparency request appended to the prompt; the backend resolves `auto` to `transparent` and returns RGBA. `background: "transparent"` is never sent — it returns HTTP 400 on this transport. See [ADR-0001](docs/adr/0001-request-transparency-in-the-prompt.md).
+- **`--transparent` no longer requires Pillow.** The native path writes the bytes the model returned. Pillow is still needed for `--format webp` and `--transparent-mode chroma`.
+- **The prompt is no longer hijacked.** The old chroma template banned shadows, reflections, gradients and texture on the user's behalf. The native suffix bans nothing: ask for a drop shadow and it comes back rendered into the alpha, ask for in-image text and you get it.
+- `--background` accepts `transparent` instead of rejecting it at parse time. It is passed through unchanged and the backend's real error is surfaced, rather than silently substituting a different value.
+- `references/api-recipe.md` and `references/transparent-image-tips.md` rewritten around the actual mechanism. The previous "`background: transparent` is rejected, chroma-key replaces it" framing was literally true and badly misleading.
+
+### Added
+
+- `--transparent-mode {native,chroma}`, defaulting to `native`. The chroma path survives as an explicit fallback for subject classes native transparency is unverified on (hair, fur, smoke, glass, translucency). Passing `--bg-tool` implies chroma mode, so pre-0.2.0 invocations still route as before.
+- Alpha verification after a transparent run. The primary signal is the backend's own resolved background mode, which is free and needs no imaging library — important, because the native path is stdlib-only and a Pillow-gated check would be silently absent on exactly the recommended configuration. A local alpha scan refines it when Pillow is present. A result with no usable alpha warns on stderr and still saves; the image is already paid for.
+- Contradictory and impossible flag combinations are now rejected in preflight, before the paid request: `--transparent --format jpeg`, `--transparent --background transparent`, and `--bg-tool=adobe`. The last one previously spent a generation and then exited without saving anything.
+- `--transparent-mode` and `--bg-tool` imply `--transparent`. Passing either alone used to be inert: it spent a generation, returned an opaque image, and warned about nothing.
+- The resolved image model and background mode are recorded in the sidecar. This replaces a "gpt-image-2" claim the skill had been repeating across three files without ever observing it; the backend actually routes to `gpt-image-2-codex`, which is why the transparent parameter is refused.
+- `CONTEXT.md` glossary and `docs/adr/`. The glossary names the three transports that reach OpenAI image models, which is the distinction that makes this whole area confusing.
+
+### Fixed
+
+- Image results are accepted from `response.output_item.done` regardless of `status`. This backend emits the finished image while still reporting `status: "generating"`, and its `response.completed.output` arrives empty, so every successful generation was silently falling through to the last-resort partial frame. Both observed cases happened to be byte-identical, but a stale partial would have saved the wrong image.
+
 ## [0.1.5] - 2026-07-21
 
 ### Added

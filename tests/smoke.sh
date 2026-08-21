@@ -23,14 +23,33 @@ echo "3. WebP (Pillow conversion)"
 "$GEN" "a tiny blue square" --out-dir "$OUT" --quality low --format webp
 ls "$OUT"/*.webp >/dev/null
 
-echo "4. transparent"
-"$GEN" "a coffee mug" --out-dir "$OUT" --quality low --transparent --bg-tool chroma
-# Should be RGBA after chroma-key
+echo "4a. transparent (native — the default path)"
+"$GEN" "a coffee mug with a soft drop shadow" --out-dir "$OUT" --quality low --transparent
+# Real alpha from the model, and the backend must report it resolved to transparent.
+python3 -c "
+from PIL import Image
+import glob, json
+imgs = sorted(glob.glob('$OUT/*coffee*.png'))
+assert imgs, 'no transparent PNG found'
+img = Image.open(imgs[-1])
+assert img.mode == 'RGBA', f'expected RGBA, got {img.mode}'
+alpha = img.getchannel('A')
+clear = alpha.histogram()[0]
+assert clear > 0, 'no fully transparent pixels — alpha channel is unused'
+meta = json.load(open(imgs[-1] + '.json'))
+assert meta['resolved_background'] == 'transparent', meta['resolved_background']
+assert meta['transparency_mode'] == 'native', meta['transparency_mode']
+pct = 100 * clear / (img.width * img.height)
+print(f'  OK {imgs[-1]} is RGBA, {pct:.1f}%% clear, model={meta[\"image_model\"]}')
+"
+
+echo "4b. transparent (chroma fallback)"
+"$GEN" "a green leaf" --out-dir "$OUT" --quality low --transparent-mode chroma
 python3 -c "
 from PIL import Image
 import glob
-imgs = glob.glob('$OUT/*coffee*.png')
-assert imgs, 'no transparent PNG found'
+imgs = sorted(glob.glob('$OUT/*leaf*.png'))
+assert imgs, 'no chroma PNG found'
 img = Image.open(imgs[-1])
 assert img.mode == 'RGBA', f'expected RGBA, got {img.mode}'
 print(f'  OK {imgs[-1]} is RGBA')

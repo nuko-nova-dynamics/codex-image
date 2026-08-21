@@ -37,8 +37,19 @@ def test_moderation_default_auto_and_choices():
 def test_background_default_opaque_and_choices():
     assert _parse("x").background == "opaque"
     assert _parse("x", "--background", "auto").background == "auto"
+    # 0.2.0: accepted as a raw passthrough rather than rejected at parse time.
+    # The backend refuses it; we surface that error instead of substituting a
+    # different value behind the user's back. See docs/adr/0001.
+    assert _parse("x", "--background", "transparent").background == "transparent"
     with pytest.raises(SystemExit):
-        _parse("x", "--background", "transparent")
+        _parse("x", "--background", "translucent")
+
+
+def test_transparent_mode_defaults_to_native():
+    assert _parse("x").transparent_mode is None
+    assert _parse("x", "--transparent-mode", "chroma").transparent_mode == "chroma"
+    with pytest.raises(SystemExit):
+        _parse("x", "--transparent-mode", "adobe")
 
 
 def test_size_invalid_format_rejected_at_parse(capsys):

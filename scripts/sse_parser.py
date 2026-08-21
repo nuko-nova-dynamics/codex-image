@@ -39,8 +39,10 @@ def extract_image_b64(raw: str) -> tuple[str, str]:
     """Walk the full stream, accumulate candidates, return (b64, source_name).
 
     Priority (per spec §4):
-    1. response.output_item.done with image_generation_call (status: completed)
+    1. response.output_item.done with image_generation_call carrying a result
+       (any status — the backend reports "generating" on finished items)
     2. response.completed.response.output[*] for image_generation_call
+       (may be an empty list on this backend)
     3. last response.image_generation_call.partial_image — only if 1 & 2 are
        missing and the stream includes response.completed
 
@@ -61,7 +63,12 @@ def extract_image_b64(raw: str) -> tuple[str, str]:
             failure_message = f"{code}: {msg}".strip(": ")
         elif ev_type == "response.output_item.done":
             item = ev.get("item") or {}
-            if item.get("type") == "image_generation_call" and item.get("status") == "completed":
+            # Accept the result whenever one is present, regardless of `status`.
+            # The Codex backend emits output_item.done carrying the finished
+            # image while still reporting status="generating" (observed on live
+            # streams 2026-08-21), so gating on status=="completed" silently
+            # demoted real results to the partial_image fallback.
+            if item.get("type") == "image_generation_call":
                 if result := item.get("result"):
                     final_from_item_done = result
         elif ev_type == "response.completed":
@@ -92,22 +99,46 @@ def extract_image_b64(raw: str) -> tuple[str, str]:
     raise ParseError("stream ended with no image_generation_call result")
 
 
+def _image_tool_model(resp: dict) -> str | None:
+    """Read the image model the backend resolved for itself.
+
+    The backend echoes its resolved tool config on response.created /
+    .in_progress / .completed. We never choose this model — `tools[0].model`
+    is schema-present but not user-selectable on this transport — so the echo
+    is the only place its identity is observable.
+    """
+    for tool in resp.get("tools") or []:
+        if tool.get("type") == "image_generation" and tool.get("model"):
+            return tool["model"]
+    return None
+
+
 def extract_response_metadata(raw: str) -> dict:
-    """Pull useful diagnostic fields from the stream (revised_prompt, response_id, usage)."""
+    """Pull useful diagnostic fields from the stream.
+
+    Includes the image model the backend actually used and the background mode
+    it resolved to, which is how a native-transparency run is confirmed: we
+    send "auto" and the backend answers "transparent".
+    """
     meta: dict = {}
     for ev in parse_sse_events(raw):
         ev_type = ev.get("type", "")
         if ev_type == "response.created":
             resp = ev.get("response") or {}
             meta["response_id"] = resp.get("id")
+            if model := _image_tool_model(resp):
+                meta["image_model"] = model
         elif ev_type == "response.output_item.done":
             item = ev.get("item") or {}
             if item.get("type") == "image_generation_call":
                 meta["revised_prompt"] = item.get("revised_prompt") or ""
                 meta["resolved_quality"] = item.get("quality")
                 meta["resolved_size"] = item.get("size")
+                meta["resolved_background"] = item.get("background")
         elif ev_type == "response.completed":
             resp = ev.get("response") or {}
             meta["usage"] = resp.get("usage")
             meta["tool_usage"] = resp.get("tool_usage")
+            if "image_model" not in meta and (model := _image_tool_model(resp)):
+                meta["image_model"] = model
     return meta

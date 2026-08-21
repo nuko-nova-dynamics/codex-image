@@ -1,53 +1,57 @@
-# Transparent images — when chroma-key fails, what to do
+# Transparent images
 
-(Chroma prompt and edge-refinement guidance adapted from the openai/codex
-imagegen skill, Apache-2.0.)
+`--transparent` asks the model for a real alpha channel. It does **not** run a background-removal step.
 
-The `--transparent` flag uses a chroma-key workaround:
+Mechanism: the request sends `background: "auto"` and appends one sentence to your prompt. The backend reads the prompt, resolves `auto` to `transparent`, and returns RGBA. Never send `background: "transparent"` — it returns HTTP 400 on this transport. Full reasoning in [ADR-0001](../docs/adr/0001-request-transparency-in-the-prompt.md).
 
-1. Generate the subject on a flat solid color (`#00ff00` by default)
-2. Locally remove that color and replace with alpha
+No Pillow needed. The native path writes the bytes the model returned.
 
-This is NOT native model transparency. `gpt-image-2` rejects `background: "transparent"`.
+## The prompt is the mechanism
 
-## Prompt shape that keys cleanly
-
-The script appends a chroma suffix automatically, but when you write or augment the prompt yourself, aim for:
+The appended sentence is what triggers transparency:
 
 ```text
-<subject> on a perfectly flat solid #00ff00 chroma-key background.
-The background must be one uniform color with no shadows, gradients, texture,
-reflections, floor plane, or lighting variation. Keep the subject fully
-separated from the background with crisp edges and generous padding.
-Do not use #00ff00 anywhere in the subject. No cast shadow, no contact
-shadow, no reflection, no watermark.
+Output the isolated subject on a genuinely transparent background with actual alpha.
 ```
 
-## When the chroma path works well (tested)
+Two consequences worth knowing.
 
-- Solid opaque subjects (mugs, products, vehicles, foods)
-- Clear glass with content visible through it (wine glass, jar with liquid)
-- Hair / fur with fly-aways (Pomeranian, wind-blown hair) — soft-matte preserves edges
-- Smoke wisps and steam — semi-transparent edges survive
-- Plants on a contrasting key (use `--key-color #ff00ff` for green subjects)
+**Your prompt keeps full creative control.** The suffix bans nothing. Ask for a soft drop shadow and you get one, rendered *into* the alpha as semi-transparent pixels, so it composites correctly over dark backgrounds as well as light. Ask for in-image text or a label and you get it. Earlier versions of this skill silently forbade all of that; it no longer does.
 
-## When the chroma path will likely fail
+**A prompt that describes a backdrop can defeat it.** Prompt instructions outrank the request parameter. "A mug on a wooden table in a sunlit studio" describes a scene, and the model may render that scene instead of isolating the subject. If you want a cutout, describe the subject, not its surroundings.
 
-- Truly translucent bodies (jellyfish, ice cubes, soap bubbles) — chroma punches through the body, not just around it
-- Subjects with the key color baked in (a green frog on `#00ff00`, a pink rose on `#ff00ff`)
-- Reflective objects with strong key-color reflections (chrome ball, mirror)
-- Subjects against complex shadows the model insists on rendering
+## Validate the result
 
-## Validate, then refine the edge
+The skill checks the saved file and warns on stderr if the result has no alpha channel, or has one that is entirely opaque. It still saves the image, because you have already paid for it.
 
-After removal, check: alpha channel present, transparent corners, plausible subject coverage, no key-color fringe.
+On a warning, re-run with **one** targeted change — usually removing scene language from the prompt — rather than stacking corrections.
 
-- **Thin green/magenta fringe:** re-run once with `--edge-contract 1` (shrinks the alpha edge by 1 px).
-- **Stair-stepped edges on matte, non-reflective subjects:** add `--edge-feather 0.25`. Avoid feathering shiny or reflective subjects.
-- **Reflective key bleed:** re-generate at higher quality (`--quality medium`). Despill is applied automatically during chroma removal — there is no user-facing flag for it.
-- **Color conflict:** override with `--key-color #ff00ff` (magenta) or `#00ffff` (cyan). The skill auto-picks magenta for green-keyword prompts; you can force.
-- **Translucent body:** use Adobe MCP background removal instead (`--bg-tool=adobe`). Adobe handles translucency much better than chroma-key.
+## When native transparency struggles
 
-## When to give up on transparency
+Verified so far on opaque glazed ceramic. Unverified on hair, fur, feathers, smoke, glass, liquids, and translucent bodies. Those were the historical weak spots of the chroma path and there is no evidence yet either way for native.
 
-If two re-runs with different key colors and `--bg-tool=adobe` all produce a weak cutout, the subject probably needs manual masking in a real image editor, or true native transparency: `gpt-image-1.5` supports `background: "transparent"` via the official Images API — but that path requires an `OPENAI_API_KEY`, which is outside this skill's OAuth route. The skill is not a substitute for Photoshop on edge cases.
+If a cutout disappoints, escalate in this order:
+
+1. **Re-prompt.** Strip scene and backdrop language; name the subject and nothing else.
+2. **Raise quality.** `--quality medium` for fine edges and small text.
+3. **Chroma fallback.** `--transparent-mode chroma` (needs Pillow). You control the key plate, which helps when the model insists on grounding the subject with a shadow you do not want.
+4. **Adobe MCP.** `--transparent-mode chroma --bg-tool=none` to keep the un-stripped key plate, then apply the Adobe background-removal tool yourself and overwrite the file. Better than chroma-key on translucency. `--bg-tool=adobe` is **not** a thing the script can do; it is rejected in preflight, because the MCP call has to happen in the calling agent.
+
+## Chroma fallback details
+
+The chroma path generates the subject on a flat key colour and strips it locally.
+
+- **Key colour** is auto-selected to avoid the subject (`--key-color` to force). Green subjects get magenta, magenta subjects get green.
+- **Thin key-coloured fringe:** re-run with `--edge-contract 1`.
+- **Stair-stepped edges on matte, non-reflective subjects:** add `--edge-feather 0.25`. Avoid on shiny or reflective subjects.
+- **Despill** is applied automatically; there is no flag.
+
+Where chroma reliably fails: truly translucent bodies (the key punches through the subject, not just around it), subjects containing the key colour, and reflective objects with strong key-colour reflections.
+
+## Formats
+
+PNG (default) and WebP carry alpha. JPEG cannot, and `--transparent --format jpeg` fails before spending a generation.
+
+## A note on size
+
+Requested `size` and `quality` are advisory on this transport. Transparent runs have come back at resolutions that were neither requested nor documented presets. Check the saved file rather than assuming.

@@ -3,8 +3,8 @@
 > A Claude Code skill that generates and edits images with `gpt-image-2`, billed to your ChatGPT subscription. No `OPENAI_API_KEY` required.
 
 [![skills.sh](https://skills.sh/b/nuko-nova-dynamics/codex-image)](https://skills.sh/nuko-nova-dynamics/codex-image)
-[![release](https://img.shields.io/badge/release-v0.1.5-blue)](CHANGELOG.md)
-[![tests](https://img.shields.io/badge/tests-132%20passing-success)](#development)
+[![release](https://img.shields.io/badge/release-v0.2.0-blue)](CHANGELOG.md)
+[![tests](https://img.shields.io/badge/tests-148%20passing-success)](#development)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Why
@@ -19,7 +19,7 @@ The Codex desktop app and Codex CLI both generate images via `gpt-image-2`, bill
 
 ## Status
 
-**v0.1.5 released** (2026-07-21). 132 tests passing, smoke test green against the real backend.
+**v0.2.0 released** (2026-08-21). Native model transparency; `--transparent` no longer needs Pillow. 148 tests passing, and the native path was confirmed live against the real backend (genuine alpha, with a user-requested drop shadow surviving into the alpha channel).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what's in this release, [`SKILL.md`](SKILL.md) for the contract Claude reads, and [`references/`](references/) for the canonical request recipe and prompting cookbook.
 
@@ -45,7 +45,7 @@ Either way, the skill auto-detects Codex CLI's auth at `~/.codex/auth.json`. Mak
 codex login
 ```
 
-Optional: `--format webp` and `--transparent` need Pillow (`python3 -m pip install 'Pillow>=10'`); everything else is stdlib-only.
+Optional: `--format webp` and `--transparent-mode chroma` need Pillow (`python3 -m pip install 'Pillow>=10'`); everything else, including plain `--transparent`, is stdlib-only.
 
 ## Quick start
 
@@ -53,7 +53,7 @@ Optional: `--format webp` and `--transparent` need Pillow (`python3 -m pip insta
 # Generate
 /codex-image "a coffee mug"
 
-# Transparent background (chroma-key workflow)
+# Transparent background (native alpha from the model)
 /codex-image "a coffee mug" --transparent
 
 # Edit a reference image
@@ -87,7 +87,7 @@ This skill talks to the same backend route the Codex CLI itself uses (`chatgpt.c
 ## Known limitations
 
 - **Quality cap:** the OAuth route silently caps `quality: high` to `medium` regardless of plan (Plus, Pro, Business). True `high` requires `OPENAI_API_KEY`.
-- **No native transparency:** `gpt-image-2` rejects `background: "transparent"`. The `--transparent` flag uses a chroma-key workaround (tested clean on hard cases — fly-away fur, smoke, glass — but fails on truly translucent bodies like jellyfish).
+- **Transparency is requested in the prompt, not the parameter.** `background: "transparent"` is rejected by this backend, but the model returns real alpha when asked in the prompt with `background: "auto"` — which is what `--transparent` does. Verified on opaque subjects; hair, glass, smoke and translucency are untested, so the chroma path survives as `--transparent-mode chroma`. See [ADR-0001](docs/adr/0001-request-transparency-in-the-prompt.md).
 - **No batch:** the backend rejects `n`. Multiple images = multiple invocations.
 - **No multi-turn via `previous_response_id`:** backend is stateless. Multi-turn is achieved by the agent re-passing the prior image (`--from-last` / `--input`, up to 16 references).
 - **No token refresh:** the skill reads Codex CLI's `auth.json` as-is and never refreshes it. If the access token has expired, run any Codex command (or `codex login`) to rotate it, then retry.
@@ -98,7 +98,9 @@ See [`tests/`](tests/) for the full test suite and [`tests/smoke.sh`](tests/smok
 
 - [`references/api-recipe.md`](references/api-recipe.md) — canonical Codex Responses request shape
 - [`references/prompting-cookbook.md`](references/prompting-cookbook.md) — prompting fundamentals + templates
-- [`references/transparent-image-tips.md`](references/transparent-image-tips.md) — chroma-key edge cases and Adobe fallback guidance
+- [`references/transparent-image-tips.md`](references/transparent-image-tips.md) — how native transparency works, when it struggles, and the chroma fallback
+- [`CONTEXT.md`](CONTEXT.md) — glossary; defines the three transports that reach OpenAI image models
+- [`docs/adr/`](docs/adr/) — architecture decisions
 
 ## Other agents
 
@@ -116,7 +118,7 @@ ruff check scripts/
 # Unit tests (offline, mocked HTTP)
 python3 -m pytest tests/ -q
 
-# End-to-end smoke test (real backend, ~5 generations, needs codex login + Pillow)
+# End-to-end smoke test (real backend, ~6 generations, needs codex login + Pillow)
 ./tests/smoke.sh
 ```
 

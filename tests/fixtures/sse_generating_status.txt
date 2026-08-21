@@ -1,0 +1,11 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_2","model":"gpt-5.5","tools":[{"type":"image_generation","background":"auto","model":"gpt-image-2-codex","moderation":"auto","n":1,"output_compression":100,"output_format":"png","quality":"auto","size":"auto"}]}}
+
+event: response.image_generation_call.partial_image
+data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"UEFSVElBTA==","partial_image_index":0}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"ig_2","type":"image_generation_call","status":"generating","result":"RklOQUw=","quality":"medium","size":"1536x1024","output_format":"png","background":"transparent","action":"generate","revised_prompt":"A red mug"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_2","model":"gpt-5.5","status":"completed","output":[],"tools":[{"type":"image_generation","background":"auto","model":"gpt-image-2-codex","moderation":"auto","n":1,"output_compression":100,"output_format":"png","quality":"auto","size":"auto"}]}}

@@ -22,6 +22,12 @@ class GenerationRecord:
     response_id: str
     ts: str
     account_id: str
+    # Observed from the response, never asserted. The backend picks the image
+    # model itself and echoes it; `resolved_background` is how a native
+    # transparency run is confirmed (we send "auto", it answers "transparent").
+    image_model: str | None = None
+    resolved_background: str | None = None
+    transparency_mode: str | None = None
 
 
 def write_record(

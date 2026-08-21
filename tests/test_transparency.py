@@ -54,3 +54,23 @@ def test_pick_key_color_falls_back_to_green_when_all_families_in_prompt():
 
 def test_pillow_available_is_bool():
     assert isinstance(pillow_available(), bool)
+
+
+def test_native_suffix_preserves_terminal_punctuation():
+    """The docstring promises nothing is stripped or rewritten."""
+    from transparency import NATIVE_TRANSPARENCY_SUFFIX, apply_native_transparency_suffix
+
+    assert apply_native_transparency_suffix("a red mug") == (
+        f"a red mug. {NATIVE_TRANSPARENCY_SUFFIX}"
+    )
+    assert apply_native_transparency_suffix("a red mug.") == (
+        f"a red mug. {NATIVE_TRANSPARENCY_SUFFIX}"
+    )
+    # A question mark must survive, and must not gain a stray period.
+    assert apply_native_transparency_suffix("what if a mug?") == (
+        f"what if a mug? {NATIVE_TRANSPARENCY_SUFFIX}"
+    )
+    # Abbreviations must not be truncated.
+    assert apply_native_transparency_suffix("a flag of the U.S.A.").startswith(
+        "a flag of the U.S.A."
+    )
