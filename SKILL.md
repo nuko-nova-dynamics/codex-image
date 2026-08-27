@@ -53,6 +53,8 @@ When the user wants a transparent background, add `--transparent`. That's it —
 
 The script asks the model for alpha directly: it sends `background: "auto"` and appends one sentence to the prompt, and the backend returns RGBA. Do **not** pass `--background transparent`; that value is rejected by this backend (`docs/adr/0001-request-transparency-in-the-prompt.md` explains why, and why the obvious "fix" is wrong).
 
+**If you test the backend yourself and see `"Transparent background is not supported for this model."`, do not conclude transparency is unavailable.** That 400 is the *parameter* being refused, not the capability. The model returns real alpha when asked in the prompt, which is what `--transparent` does. Advice that native transparency needs `gpt-image-1.5` or an `OPENAI_API_KEY` is pre-0.2.0 and wrong; if you are reading it, your installed skill is stale. Check `metadata.version` in this file — it should be `0.2.0` or later.
+
 Two things to get right when you write the prompt:
 
 - **Describe the subject, not a scene.** Prompt beats parameter. "A mug on a wooden table in a sunlit studio" may render that studio instead of isolating the mug. Name the subject and its material; leave the surroundings out.
