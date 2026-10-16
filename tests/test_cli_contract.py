@@ -214,6 +214,7 @@ def _run_capturing_model(tmp_path, fixture_dir, monkeypatch, *extra):
                 f'"item":{{"type":"image_generation_call","result":"{fake_b64}"}}}}\n\n')
 
     monkeypatch.setattr(generate, "post_responses", fake_post)
+    monkeypatch.setattr(generate, "_detect_codex_cli_version", lambda: "0.200.0-alpha.3")
     rc = generate.main(["x", "--out-dir", str(tmp_path / "out"), *extra])
     return rc, captured.get("model"), home
 
@@ -234,11 +235,34 @@ def test_cache_is_used_when_catalog_request_fails(tmp_path, fixture_dir, monkeyp
     monkeypatch.setattr(generate, "fetch_models", offline)
     home = tmp_path / "codex-home"
     home.mkdir()
-    (home / "models_cache.json").write_text(json.dumps({"models": [
+    (home / "models_cache.json").write_text(json.dumps({"client_version": "0.200.0", "models": [
         {"slug": "cached-default", "priority": 1, "visibility": "list"}]}))
     rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
     assert rc == 0
     assert model == "cached-default"
+
+
+def test_cache_from_another_codex_version_is_ignored(tmp_path, fixture_dir, monkeypatch, capsys):
+    import http.client
+    import json
+
+    def truncated(**kw):
+        raise http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(generate, "fetch_models", truncated)
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "models_cache.json").write_text(json.dumps({"client_version": "0.150.0", "models": [
+        {"slug": "retired-model", "priority": 1, "visibility": "list"}]}))
+    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
+    assert rc == 1
+    assert model is None
+    assert "--orchestrator" in capsys.readouterr().err
+
+
+def test_catalog_request_uses_whole_codex_version():
+    assert generate._whole_version("0.144.0-alpha.4") == "0.144.0"
+    assert generate._whole_version("0.163.0") == "0.163.0"
 
 
 def test_no_catalog_and_no_cache_fails_before_posting(tmp_path, fixture_dir, monkeypatch, capsys):

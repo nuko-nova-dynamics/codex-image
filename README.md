@@ -76,9 +76,10 @@ Defaults can be overridden via env vars:
 export CODEX_IMAGE_OUT_DIR="./assets/"
 export CODEX_IMAGE_QUALITY="medium"
 export CODEX_IMAGE_FORMAT="webp"
+export CODEX_IMAGE_ORCHESTRATOR="gpt-6.1-sol"  # optional; unset follows Codex's default
 ```
 
-Recognized env vars: `CODEX_IMAGE_SIZE`, `CODEX_IMAGE_QUALITY`, `CODEX_IMAGE_FORMAT`, `CODEX_IMAGE_OUT_DIR`, and `CODEX_IMAGE_HOME` (state dir, default `~/.codex-image`). Each maps to the flag of the same name in [`scripts/generate.py`](scripts/generate.py).
+Recognized env vars: `CODEX_IMAGE_SIZE`, `CODEX_IMAGE_QUALITY`, `CODEX_IMAGE_FORMAT`, `CODEX_IMAGE_OUT_DIR`, `CODEX_IMAGE_ORCHESTRATOR` (maps to `--orchestrator`; unset means Codex's current default model for the account), and `CODEX_IMAGE_HOME` (state dir, default `~/.codex-image`). Each flag-backed variable maps to the flag of the same name in [`scripts/generate.py`](scripts/generate.py).
 
 ## Stability
 

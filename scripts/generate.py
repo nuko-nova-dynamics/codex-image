@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import sys
@@ -113,10 +114,15 @@ def post_responses(
         raise
 
 
+def _whole_version(version: str) -> str:
+    """`0.144.0-alpha.4` -> `0.144.0`, as Codex's `client_version_to_whole` does for catalog lookups."""
+    return ".".join(version.split("-")[0].split("+")[0].split(".")[:3])
+
+
 def fetch_models(*, headers: dict[str, str], cli_version: str, timeout: int = 20) -> list[dict]:
     """GET the account's Codex model catalog, the same list Codex's model picker uses."""
     req = urllib.request.Request(
-        f"{api_client.MODELS_ENDPOINT}?client_version={cli_version}",
+        f"{api_client.MODELS_ENDPOINT}?client_version={_whole_version(cli_version)}",
         headers={**headers, "Accept": "application/json"},
         method="GET",
     )
@@ -124,13 +130,20 @@ def fetch_models(*, headers: dict[str, str], cli_version: str, timeout: int = 20
         return json.loads(resp.read().decode("utf-8")).get("models") or []
 
 
-def _cached_models() -> list[dict]:
-    """Codex's own on-disk copy of the catalog (refreshed whenever Codex runs)."""
+def _cached_models(cli_version: str) -> list[dict]:
+    """Codex's own on-disk copy of the catalog (refreshed whenever Codex runs).
+
+    Like Codex, trust it only when the installed Codex version wrote it; a cache
+    left by an older Codex can still list models that have since retired.
+    """
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     try:
-        return json.loads((home / "models_cache.json").read_text()).get("models") or []
-    except (OSError, ValueError, AttributeError):
+        cache = json.loads((home / "models_cache.json").read_text())
+    except (OSError, ValueError):
         return []
+    if not isinstance(cache, dict) or cache.get("client_version") != _whole_version(cli_version):
+        return []
+    return cache.get("models") or []
 
 
 def resolve_orchestrator(
@@ -145,9 +158,9 @@ def resolve_orchestrator(
         if model := api_client.codex_default_model(
                 fetch_models(headers=headers, cli_version=cli_version)):
             return model, "Codex model catalog"
-    except (urllib.error.URLError, TimeoutError, ValueError):
+    except (OSError, http.client.HTTPException, ValueError):
         pass
-    if model := api_client.codex_default_model(_cached_models()):
+    if model := api_client.codex_default_model(_cached_models(cli_version)):
         return model, "Codex models_cache.json"
     return None, "none"
 
@@ -427,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
         args.orchestrator, headers=headers, cli_version=cli_version)
     if orchestrator is None:
         print("✗ Could not read Codex's default model (catalog request failed and no "
-              "~/.codex/models_cache.json). Run `codex` once, or pass --orchestrator "
+              "current ~/.codex/models_cache.json). Run `codex` once, or pass --orchestrator "
               "<model>.", file=sys.stderr)
         return 1
     if args.verbose:
