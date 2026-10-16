@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Requests follow Codex's own routing: the script reads `$CODEX_HOME/config.toml` over `/etc/codex/config.toml` and sends the model list request and the generation to a custom `model_provider`'s `base_url` with its key (no ChatGPT sign-in needed, so a proxy works), else to `openai_base_url`, else to chatgpt.com. `--whoami` reports the provider route.
 - Experimental GPT Image 2.5 Sunburst/Flare requests via `--image-model`, plus `xhigh` and `max` quality requests. Codex Responses may override these values; existing default selection is preserved.
 - Requested image model and resolved quality in sidecars, model mismatch warnings, and GPT Image 2.5 compatibility guidance backed by live subscription-endpoint probes.
 
@@ -21,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Every run failed with HTTP 400 after OpenAI retired GPT-5.5 from Codex with ChatGPT sign-in on 2026-10-14: the orchestrator was pinned to `gpt-5.5`, and `--orchestrator` only accepted three GPT-5.x models. The script now uses the model Codex treats as the account's default, from the live Codex model catalog or Codex's `models_cache.json`, and `--orchestrator` (or `CODEX_IMAGE_ORCHESTRATOR`) accepts any model name.
+- The default orchestrator is now the newest Sol-tier model the route lists, not whichever model ranks first; Astra, the top tier, is never picked by default.
 - When the model catalog request fails and no current cache exists, the error now names the cause (for example `HTTP 401`) and says `codex login` for an expired sign-in, instead of only suggesting `--orchestrator`.
 - Smoke test: the chroma case used "a green leaf", whose output filename also matches step 5's `*green*.png` assertion, so the `--from-last` step could pass without producing anything. Renamed to "a maple leaf" (still a green-family keyword, so automatic key-colour selection is still exercised), and both transparency cases now assert `transparency_mode` from the sidecar rather than trusting filename globs.
 

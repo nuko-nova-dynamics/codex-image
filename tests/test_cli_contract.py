@@ -305,3 +305,97 @@ def test_network_failure_reason_is_reported(tmp_path, fixture_dir, monkeypatch, 
     err = capsys.readouterr().err
     assert rc == 1
     assert "URLError: [Errno 8] nodename nor servname provided" in err
+
+
+def test_provider_route_needs_no_chatgpt_sign_in(tmp_path, monkeypatch):
+    import base64
+    import json
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        'model_provider = "proxy"\nmodel = "gpt-6-astra"\n'
+        '[model_providers.proxy]\nbase_url = "http://127.0.0.1:8317/v1"\n'
+        'experimental_bearer_token = "k-test"\nwire_api = "responses"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(generate, "fetch_models", lambda **kw: [
+        {"slug": s} for s in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-sol-latest")])
+    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
+    captured = {}
+
+    def fake_post(*, body, headers, endpoint, **kw):
+        captured.update(model=body["model"], endpoint=endpoint, auth=headers.get("Authorization"))
+        return ('event: response.output_item.done\ndata: {"type":"response.output_item.done",'
+                f'"item":{{"type":"image_generation_call","result":"{fake_b64}"}}}}\n\n')
+
+    monkeypatch.setattr(generate, "post_responses", fake_post)
+    target = tmp_path / "out.png"
+    assert generate.main(["x", "--out", str(target)]) == 0
+    assert captured == {"model": "gpt-6.1-sol",
+                        "endpoint": "http://127.0.0.1:8317/v1/responses",
+                        "auth": "Bearer k-test"}
+    assert json.loads(target.with_suffix(".png.json").read_text())["account_id"] == "provider:proxy"
+
+
+def test_unreadable_codex_config_is_a_clean_error(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text('model_provider = "p\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    assert generate.main(["x", "--out-dir", str(tmp_path / "out")]) == 2
+    assert capsys.readouterr().err.startswith("✗ Cannot read Codex's config")
+
+
+def test_model_list_failure_does_not_print_provider_query_values(tmp_path, monkeypatch, capsys):
+    import urllib.error
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        'model_provider = "p"\n[model_providers.p]\nbase_url = "http://p/v1"\n'
+        'experimental_bearer_token = "k"\n[model_providers.p.query_params]\nkey = "secret-q"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+
+    def offline(**kw):
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(generate, "fetch_models", offline)
+    assert generate.main(["x", "--out-dir", str(tmp_path / "out")]) == 1
+    assert "secret-q" not in capsys.readouterr().err
+
+
+def test_api_calls_refuse_redirects(monkeypatch):
+    import http.server
+    import threading
+    import urllib.error
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append((self.path, self.headers.get("Authorization")))
+            if self.path.startswith("/v1/models"):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/elsewhere")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"data": []}')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/v1/models",
+                                     headers={"Authorization": "Bearer k"})
+        with pytest.raises(urllib.error.HTTPError) as err:
+            generate._OPENER.open(req, timeout=5)
+        assert err.value.code == 302
+        assert [path for path, _ in hits] == ["/v1/models"]
+    finally:
+        server.shutdown()
