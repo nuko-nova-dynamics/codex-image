@@ -1,6 +1,6 @@
 ---
 name: codex-image
-description: Generate or edit images with gpt-image-2, billed to the user's ChatGPT subscription via Codex CLI OAuth — no OPENAI_API_KEY needed. Use whenever the user wants to generate, create, draw, edit, or modify an image, picture, photo, logo, icon, illustration, product shot, UI mockup, wallpaper, or infographic — including transparent-background / cutout PNGs. Trigger on phrasing like "make me an image of X", "draw a logo for Y", "generate a picture of Z", "now make it darker", "remove the background", or an explicit /codex-image invocation.
+description: "Use when the user asks to generate or edit an image of any kind, whatever it is for: a logo, icon, photo, illustration, mockup, texture, or reference picture. Also use for follow-up edits to the last image, such as \"make it darker\" or \"remove the background\", and for transparent PNG cutouts."
 license: MIT
 metadata:
   author: nuko-nova-dynamics

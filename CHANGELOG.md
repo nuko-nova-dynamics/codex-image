@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `SKILL.md` description now lists only when to use the skill: generating or editing any image, follow-up edits, and transparent cutouts. What the skill does and how it bills moved out of the description, which stays loaded in every session.
 - CI markdownlint now covers `AGENTS.md`, `CONTEXT.md`, and `docs/**/*.md` — 17 files instead of 14. The files added in 0.2.0 were only ever linted by hand.
 
 ### Fixed
