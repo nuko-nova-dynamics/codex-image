@@ -162,7 +162,8 @@ def resolve_orchestrator(
     except urllib.error.HTTPError as e:
         failure = f"HTTP {e.code}"
     except (OSError, http.client.HTTPException, ValueError) as e:
-        failure = type(e).__name__
+        reason = getattr(e, "reason", None) or e
+        failure = f"{type(e).__name__}: {redact.redact_text(str(reason))}"
     if model := api_client.codex_default_model(_cached_models(cli_version)):
         return model, "Codex models_cache.json"
     return None, failure
