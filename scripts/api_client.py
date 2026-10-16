@@ -1,4 +1,4 @@
-"""Build Codex Responses API requests for gpt-image-2 image generation."""
+"""Build Codex Responses API requests for GPT Image generation."""
 from __future__ import annotations
 
 DEFAULT_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -18,6 +18,7 @@ def build_body(
     quality_jpeg: int = 90,
     input_images: list[str] | None = None,
     orchestrator_model: str = "gpt-5.5",
+    image_model: str | None = None,
     reasoning_effort: str = "xhigh",
     instructions: str | None = None,
 ) -> dict:
@@ -26,8 +27,10 @@ def build_body(
     Args:
         output_format: "png" | "jpeg" | "webp". WebP requests PNG on the wire
             (we convert locally) since the backend ignores webp.
-        input_images: list of data URLs / URLs / file_ids. Up to 16 (gpt-image-2
-            model limit, per the official image-edit API types). Triggers edit mode.
+        input_images: list of data URLs / URLs / file_ids. Up to 16
+            references (the skill cap). Triggers edit mode.
+        image_model: Optional image-tool model request. Codex Responses may
+            override it; only response metadata identifies the resolved model.
         reasoning_effort: 'minimal'/'none' are rejected for image_gen; we silently
             promote to 'low'.
     """
@@ -47,6 +50,8 @@ def build_body(
         "output_format": wire_format,
         "background": background,
     }
+    if image_model is not None:
+        tool["model"] = image_model
     if wire_format == "jpeg":
         tool["output_compression"] = quality_jpeg
     if moderation:

@@ -105,3 +105,17 @@ def test_build_headers_set_required_fields():
     assert headers["version"] == "0.128.0"
     # OpenAI-Beta is intentionally not set (WebSocket-only).
     assert "OpenAI-Beta" not in headers
+
+
+@pytest.mark.parametrize("model", ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"])
+def test_image_model_selection_is_tool_parameter(model):
+    body = build_body(prompt="x", size="auto", quality="xhigh", output_format="png",
+                      image_model=model)
+    assert body["model"] == "gpt-5.5"
+    assert body["tools"][0]["model"] == model
+    assert body["tools"][0]["quality"] == "xhigh"
+
+
+def test_default_leaves_image_model_selection_to_endpoint():
+    body = build_body(prompt="x", size="auto", quality="high", output_format="png")
+    assert "model" not in body["tools"][0]

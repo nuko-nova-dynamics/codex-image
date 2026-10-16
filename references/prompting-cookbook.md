@@ -1,4 +1,4 @@
-# Prompting cookbook for gpt-image-2
+# Prompting cookbook for GPT Image
 
 (Distilled from the official OpenAI image generation cookbook and the openai/codex
 imagegen skill's prompting guidance (Apache-2.0), adapted for this skill.)
@@ -82,10 +82,10 @@ Define the audience and layout flow; label parts explicitly; require verbatim te
 Write it like a creative brief: brand positioning, audience, desired vibe,
 scene, and the exact tagline in quotes if text must appear.
 
-## What gpt-image-2 is bad at
+## Checks before delivery
 
-- Tiny text (<12px equivalent) — illegible regardless of quality
-- Hands and fingers in complex poses — still wonky at the edges
-- Reading-direction logos (e.g. Hebrew/Arabic brand marks)
+- Inspect small text for legibility; do not assume a quality setting guarantees correct lettering.
+- Inspect hands and fingers in complex poses.
+- Check reading direction and lettering in multilingual brand marks.
 - Precise pixel-perfect color palettes (it interprets, doesn't paint)
 - Vector / SVG output (it's a raster model — convert with vectorization tool after)

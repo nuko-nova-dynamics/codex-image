@@ -103,9 +103,8 @@ def _image_tool_model(resp: dict) -> str | None:
     """Read the image model the backend resolved for itself.
 
     The backend echoes its resolved tool config on response.created /
-    .in_progress / .completed. We never choose this model — `tools[0].model`
-    is schema-present but not user-selectable on this transport — so the echo
-    is the only place its identity is observable.
+    .in_progress / .completed. A requested tools[0].model can be overridden
+    on this transport, so preserve the echo independently of that request.
     """
     for tool in resp.get("tools") or []:
         if tool.get("type") == "image_generation" and tool.get("model"):
@@ -128,6 +127,11 @@ def extract_response_metadata(raw: str) -> dict:
             meta["response_id"] = resp.get("id")
             if model := _image_tool_model(resp):
                 meta["image_model"] = model
+        elif ev_type == "response.image_generation_call.partial_image":
+            # The partial-image fallback may be the only saved result; later
+            # final items override this.
+            if ev.get("quality") is not None:
+                meta["resolved_quality"] = ev["quality"]
         elif ev_type == "response.output_item.done":
             item = ev.get("item") or {}
             if item.get("type") == "image_generation_call":
@@ -139,6 +143,14 @@ def extract_response_metadata(raw: str) -> dict:
             resp = ev.get("response") or {}
             meta["usage"] = resp.get("usage")
             meta["tool_usage"] = resp.get("tool_usage")
-            if "image_model" not in meta and (model := _image_tool_model(resp)):
+            for item in resp.get("output") or []:
+                if item.get("type") == "image_generation_call":
+                    for field, source in (("resolved_quality", "quality"),
+                                          ("resolved_size", "size"),
+                                          ("resolved_background", "background"),
+                                          ("revised_prompt", "revised_prompt")):
+                        if item.get(source) is not None:
+                            meta[field] = item[source]
+            if model := _image_tool_model(resp):
                 meta["image_model"] = model
     return meta

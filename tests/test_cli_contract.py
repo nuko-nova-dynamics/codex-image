@@ -67,8 +67,8 @@ def test_jpeg_compression_range_enforced(capsys):
         _parse("x", "--quality-jpeg", "150")
 
 
-def test_high_quality_advisory_printed(tmp_path, fixture_dir, monkeypatch, capsys):
-    """Spec §6: when user passes --quality high, the skill notes the OAuth cap."""
+def test_high_quality_does_not_claim_fixed_cap(tmp_path, fixture_dir, monkeypatch, capsys):
+    """A requested quality does not prove a fixed cap across models and plans."""
     home = tmp_path / "fake-codex-home"
     home.mkdir()
     (home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
@@ -84,7 +84,8 @@ def test_high_quality_advisory_printed(tmp_path, fixture_dir, monkeypatch, capsy
     rc = generate.main(["x", "--quality", "high", "--out-dir", str(tmp_path / "out")])
     assert rc == 0
     err = capsys.readouterr().err
-    assert "caps to medium" in err.lower() or "capped to medium" in err.lower()
+    assert "caps to medium" not in err.lower()
+    assert "true high requires" not in err.lower()
 
 
 def test_orchestrator_passed_through_to_body(tmp_path, fixture_dir, monkeypatch):
@@ -156,3 +157,43 @@ def test_unparseable_codex_cli_version_fails_closed(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: Result())
     with pytest.raises(generate.CodexCliError, match="unrecognized version"):
         generate._detect_codex_cli_version()
+
+
+@pytest.mark.parametrize("quality", ["xhigh", "max"])
+def test_new_image_quality_choices(quality):
+    assert _parse("x", "--quality", quality).quality == quality
+
+
+@pytest.mark.parametrize("reported", ["gpt-image-2-codex", None, "gpt-image-2.5-flare"])
+def test_requested_model_is_separate_from_observed(tmp_path, fixture_dir, monkeypatch, capsys, reported):
+    import base64
+    import json
+
+    home = tmp_path / "auth"
+    home.mkdir()
+    (home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
+    captured = {}
+
+    def fake_post(*, body, headers, **kwargs):
+        captured.update(body)
+        response = {"tools": [{"type": "image_generation", "model": reported}]}
+        item = {"type": "image_generation_call", "quality": "low",
+                "result": base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()}
+        return (f'event: response.created\ndata: {json.dumps({"type": "response.created", "response": response})}\n\n'
+                f'event: response.output_item.done\ndata: {json.dumps({"type": "response.output_item.done", "item": item})}\n\n')
+
+    monkeypatch.setattr(generate, "post_responses", fake_post)
+    target = tmp_path / "out.png"
+    assert generate.main(["x", "--image-model", "gpt-image-2.5-flare", "--quality", "max",
+                          "--out", str(target)]) == 0
+    assert captured["tools"][0]["model"] == "gpt-image-2.5-flare"
+    assert captured["tools"][0]["quality"] == "max"
+    record = json.loads(target.with_suffix(".png.json").read_text())
+    assert record["requested_image_model"] == "gpt-image-2.5-flare"
+    assert record["image_model"] == reported
+    assert record["quality"] == "max"
+    assert record["resolved_quality"] == "low"
+    assert ("Requested model use is not verified" in capsys.readouterr().err) == (
+        reported != "gpt-image-2.5-flare")
