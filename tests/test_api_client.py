@@ -5,6 +5,8 @@ from api_client import (
     build_body,
     build_headers,
     codex_default_model,
+    model_ids,
+    newest_sol_model,
 )
 
 
@@ -134,3 +136,16 @@ def test_codex_default_model_follows_priority_and_picker_visibility():
     assert codex_default_model(models) == "first-listed"
     assert codex_default_model([{"slug": "only-hidden", "priority": 3, "visibility": "hide"}]) == "only-hidden"
     assert codex_default_model([]) is None
+
+
+def test_newest_sol_model_picks_highest_sol_version_only():
+    models = [{"slug": s} for s in (
+        "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-sol-latest", "gpt-6-luna")]
+    assert newest_sol_model(models) == "gpt-6.1-sol"
+    assert newest_sol_model([{"slug": "gpt-7-sol", "visibility": "hide"}, {"slug": "gpt-6-sol"}]) == "gpt-6-sol"
+    assert newest_sol_model([{"slug": "gpt-6-astra"}]) is None
+
+
+def test_model_ids_reads_codex_and_proxy_lists():
+    assert [m["slug"] for m in model_ids({"models": [{"slug": "a"}]})] == ["a"]
+    assert [m["slug"] for m in model_ids({"data": [{"id": "b"}, {"object": "model"}]})] == ["b"]

@@ -305,3 +305,34 @@ def test_network_failure_reason_is_reported(tmp_path, fixture_dir, monkeypatch, 
     err = capsys.readouterr().err
     assert rc == 1
     assert "URLError: [Errno 8] nodename nor servname provided" in err
+
+
+def test_provider_route_needs_no_chatgpt_sign_in(tmp_path, monkeypatch):
+    import base64
+    import json
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        'model_provider = "proxy"\nmodel = "gpt-6-astra"\n'
+        '[model_providers.proxy]\nbase_url = "http://127.0.0.1:8317/v1"\n'
+        'experimental_bearer_token = "k-test"\nwire_api = "responses"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(generate, "fetch_models", lambda **kw: [
+        {"slug": s} for s in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-sol-latest")])
+    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
+    captured = {}
+
+    def fake_post(*, body, headers, endpoint, **kw):
+        captured.update(model=body["model"], endpoint=endpoint, auth=headers.get("Authorization"))
+        return ('event: response.output_item.done\ndata: {"type":"response.output_item.done",'
+                f'"item":{{"type":"image_generation_call","result":"{fake_b64}"}}}}\n\n')
+
+    monkeypatch.setattr(generate, "post_responses", fake_post)
+    target = tmp_path / "out.png"
+    assert generate.main(["x", "--out", str(target)]) == 0
+    assert captured == {"model": "gpt-6.1-sol",
+                        "endpoint": "http://127.0.0.1:8317/v1/responses",
+                        "auth": "Bearer k-test"}
+    assert json.loads(target.with_suffix(".png.json").read_text())["account_id"] == "provider:proxy"

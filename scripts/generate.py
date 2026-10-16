@@ -18,6 +18,7 @@ from pathlib import Path
 
 import api_client
 import auth as auth_mod
+import codex_route
 import naming
 import redact
 import retry as retry_mod
@@ -119,15 +120,17 @@ def _whole_version(version: str) -> str:
     return ".".join(version.split("-")[0].split("+")[0].split(".")[:3])
 
 
-def fetch_models(*, headers: dict[str, str], cli_version: str, timeout: int = 20) -> list[dict]:
-    """GET the account's Codex model catalog, the same list Codex's model picker uses."""
-    req = urllib.request.Request(
-        f"{api_client.MODELS_ENDPOINT}?client_version={_whole_version(cli_version)}",
-        headers={**headers, "Accept": "application/json"},
-        method="GET",
-    )
+def fetch_models(
+    *, route: codex_route.Route, headers: dict[str, str], cli_version: str, timeout: int = 20,
+) -> list[dict]:
+    """GET the model list from wherever Codex routes requests."""
+    url = route.models_url
+    if route.kind == "chatgpt":
+        url += f"?client_version={_whole_version(cli_version)}"
+    req = urllib.request.Request(url, headers={**headers, "Accept": "application/json"},
+                                 method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8")).get("models") or []
+        return api_client.model_ids(json.loads(resp.read().decode("utf-8")))
 
 
 def _cached_models(cli_version: str) -> list[dict]:
@@ -143,34 +146,39 @@ def _cached_models(cli_version: str) -> list[dict]:
         return []
     if not isinstance(cache, dict) or cache.get("client_version") != _whole_version(cli_version):
         return []
-    return cache.get("models") or []
+    return api_client.model_ids(cache)
 
 
 def resolve_orchestrator(
-    explicit: str | None, *, headers: dict[str, str], cli_version: str,
+    explicit: str | None, *, route: codex_route.Route, headers: dict[str, str],
+    cli_version: str, config_model: str | None = None,
 ) -> tuple[str | None, str]:
-    """Return (model, source). An explicit choice wins; otherwise follow Codex's
-    current default, from the live catalog or Codex's cache. Models retire, so
-    the skill never pins one."""
+    """Return (model, source). An explicit choice wins. Otherwise use the newest
+    Sol-tier model the route lists, then Codex's configured model, then the
+    catalog's top-ranked model. No model is pinned here: models retire."""
     if explicit:
         return explicit, "--orchestrator"
-    failure = "returned no models"
+    failure, source, models = "returned no models", "model list", []
     try:
-        if model := api_client.codex_default_model(
-                fetch_models(headers=headers, cli_version=cli_version)):
-            return model, "Codex model catalog"
+        models = fetch_models(route=route, headers=headers, cli_version=cli_version)
     except urllib.error.HTTPError as e:
         failure = f"HTTP {e.code}"
     except (OSError, http.client.HTTPException, ValueError) as e:
         reason = getattr(e, "reason", None) or e
         failure = f"{type(e).__name__}: {redact.redact_text(str(reason))}"
-    if model := api_client.codex_default_model(_cached_models(cli_version)):
-        return model, "Codex models_cache.json"
+    if not models and route.kind == "chatgpt":
+        models, source = _cached_models(cli_version), "Codex models_cache.json"
+    if model := api_client.newest_sol_model(models):
+        return model, f"newest Sol model in the {source}"
+    if config_model:
+        return config_model, "Codex config model"
+    if model := api_client.codex_default_model(models):
+        return model, f"top model in the {source}"
     return None, failure
 
 
 def _post_with_error_handling(
-    *, body: dict, headers: dict[str, str]
+    *, body: dict, headers: dict[str, str], route: codex_route.Route,
 ) -> tuple[str | None, int | None]:
     """POST + retry. Returns (sse_text, None) on success, or (None, exit_code) on terminal HTTP error.
 
@@ -180,14 +188,16 @@ def _post_with_error_handling(
     """
     try:
         sse = retry_mod.call_with_retries(
-            lambda: post_responses(body=body, headers=headers)
+            lambda: post_responses(body=body, headers=headers, endpoint=route.responses_url)
         )
         return sse, None
     except urllib.error.HTTPError as e:
         msg = redact.redact_text(getattr(e, "body_text", str(e)))
         print(f"✗ HTTP {e.code}: {msg}", file=sys.stderr)
         if e.code == 401:
-            print("→ Run: codex login", file=sys.stderr)
+            print("→ Run: codex login" if route.kind == "chatgpt" else
+                  f"→ Check the key for model_provider '{route.name}' in Codex's config.toml",
+                  file=sys.stderr)
         return None, 1
     except urllib.error.URLError as e:
         msg = redact.redact_text(str(e))
@@ -321,18 +331,33 @@ def main(argv: list[str] | None = None) -> int:
               "See SKILL.md's fallback ladder.", file=sys.stderr)
         return 2
 
-    # 1. Auth
-    auth_path = auth_mod.discover_auth_file()
-    if auth_path is None:
-        print("✗ Codex CLI not signed in. Run: codex login", file=sys.stderr)
-        return 2
+    # 1. Route and auth: go wherever Codex's config sends Codex.
+    codex_config = codex_route.effective_config()
     try:
-        af = auth_mod.load_auth(auth_path)
-    except auth_mod.AuthError as e:
+        route = codex_route.resolve_route(codex_config)
+    except codex_route.RouteError as e:
         print(f"✗ {e}", file=sys.stderr)
         return 2
 
-    summary = auth_mod.summarize_account(af)
+    if route.kind == "provider":
+        if args.whoami:
+            print("⌘ Codex route")
+            print(f"  model_provider: {route.name}")
+            print(f"  base_url:       {route.base_url}")
+            return 0
+        af = None
+    else:
+        auth_path = auth_mod.discover_auth_file()
+        if auth_path is None:
+            print("✗ Codex CLI not signed in. Run: codex login", file=sys.stderr)
+            return 2
+        try:
+            af = auth_mod.load_auth(auth_path)
+        except auth_mod.AuthError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            return 2
+
+    summary = auth_mod.summarize_account(af) if af else None
 
     if args.whoami:
         print("⌘ ChatGPT account info")
@@ -346,7 +371,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  token expiry: {ts.strftime('%Y-%m-%d %H:%M UTC')}")
         return 0
 
-    _maybe_show_banner(summary)
+    if summary:
+        _maybe_show_banner(summary)
 
     # 2. Build request
     import input_refs
@@ -430,31 +456,37 @@ def main(argv: list[str] | None = None) -> int:
               "not the model's own alpha", file=sys.stderr)
         effective_prompt = transparency.apply_chroma_key_suffix(args.prompt, key)
 
-    try:
-        cli_version = _detect_codex_cli_version()
-    except CodexCliError as e:
-        print(f"✗ {e}", file=sys.stderr)
-        return 2
-    headers = api_client.build_headers(
-        access_token=af.access_token,
-        account_id=af.account_id,
-        codex_cli_version=cli_version,
-    )
+    if route.kind == "chatgpt":
+        try:
+            cli_version = _detect_codex_cli_version()
+        except CodexCliError as e:
+            print(f"✗ {e}", file=sys.stderr)
+            return 2
+        headers = api_client.build_headers(
+            access_token=af.access_token,
+            account_id=af.account_id,
+            codex_cli_version=cli_version,
+        )
+    else:
+        cli_version = ""
+        headers = codex_route.provider_headers(route)
     orchestrator, orchestrator_source = resolve_orchestrator(
-        args.orchestrator, headers=headers, cli_version=cli_version)
+        args.orchestrator, route=route, headers=headers, cli_version=cli_version,
+        config_model=codex_config.get("model"))
     if orchestrator is None:
-        print(f"✗ Could not read Codex's default model: the model catalog request failed "
-              f"({orchestrator_source}) and there is no models_cache.json from this Codex "
-              f"version.", file=sys.stderr)
+        print(f"✗ Could not pick a model: the model list request to {route.models_url} "
+              f"failed ({orchestrator_source}) and nothing else named one.", file=sys.stderr)
         if orchestrator_source == "HTTP 401":
-            print("→ Run: codex login", file=sys.stderr)
+            print("→ Run: codex login" if route.kind == "chatgpt" else
+                  f"→ Check the key for model_provider '{route.name}' in Codex's config.toml",
+                  file=sys.stderr)
         else:
             print("→ Run `codex` once to refresh its cache, or pass --orchestrator <model>.",
                   file=sys.stderr)
         return 1
     if args.verbose:
-        print(f"  orchestrator     = {orchestrator} (from {orchestrator_source})",
-              file=sys.stderr)
+        print(f"  route            = {route.name} ({route.base_url})", file=sys.stderr)
+        print(f"  orchestrator     = {orchestrator} ({orchestrator_source})", file=sys.stderr)
 
     body = api_client.build_body(
         prompt=effective_prompt,
@@ -472,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 3. POST + parse
     started = time.monotonic()
-    sse, exit_code = _post_with_error_handling(body=body, headers=headers)
+    sse, exit_code = _post_with_error_handling(body=body, headers=headers, route=route)
     if sse is None:
         return exit_code or 1
 
@@ -486,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
             print("✗ Edit produced no image; re-run the edit to try again.", file=sys.stderr)
             return 1
         print("⚠ first call returned no image; retrying once…", file=sys.stderr)
-        sse, exit_code = _post_with_error_handling(body=body, headers=headers)
+        sse, exit_code = _post_with_error_handling(body=body, headers=headers, route=route)
         if sse is None:
             return exit_code or 1
         try:
@@ -628,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:
         input_image=_sidecar_safe_ref(unique_originals[0]) if unique_originals else None,
         response_id=meta.get("response_id") or "",
         ts=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        account_id=af.account_id,
+        account_id=af.account_id if af else f"provider:{route.name}",
         image_model=meta.get("image_model"),
         requested_image_model=args.image_model,
         resolved_quality=meta.get("resolved_quality"),

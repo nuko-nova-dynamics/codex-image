@@ -42,3 +42,5 @@ def _offline_model_catalog(monkeypatch):
         {"slug": "gpt-catalog-default", "priority": 1, "visibility": "list"},
     ])
     monkeypatch.delenv("CODEX_IMAGE_ORCHESTRATOR", raising=False)
+    import codex_route
+    monkeypatch.setattr(codex_route, "SYSTEM_CONFIG", FIXTURE_DIR / "no-such-system-config.toml")

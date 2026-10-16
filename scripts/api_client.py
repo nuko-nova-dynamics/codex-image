@@ -109,6 +109,33 @@ def build_headers(
     }
 
 
+def model_ids(catalog: dict) -> list[dict]:
+    """Normalize a model list: Codex's catalog (`models[].slug`) or an
+    OpenAI-style list from a proxy (`data[].id`)."""
+    entries = catalog.get("models") or catalog.get("data") or []
+    return [{**m, "slug": m.get("slug") or m.get("id")} for m in entries
+            if isinstance(m, dict) and (m.get("slug") or m.get("id"))]
+
+
+def newest_sol_model(models: list[dict]) -> str | None:
+    """The highest-versioned Sol-tier model (`gpt-<version>-sol`) the account lists.
+
+    Sol is the tier the image tool needs; Astra is the top tier and Luna the
+    small one. Aliases such as `gpt-sol-latest` carry no version and are
+    skipped, as are models Codex hides from its picker.
+    """
+    import re
+    best: tuple[tuple[int, ...], str] | None = None
+    for m in models:
+        if m.get("visibility") == "hide":
+            continue
+        if match := re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-sol", m.get("slug") or ""):
+            version = tuple(int(part) for part in match.group(1).split("."))
+            if best is None or version > best[0]:
+                best = (version, m["slug"])
+    return best[1] if best else None
+
+
 def codex_default_model(models: list[dict]) -> str | None:
     """Pick the model Codex itself treats as the default for this account.
 
