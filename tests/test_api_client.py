@@ -143,6 +143,8 @@ def test_newest_sol_model_picks_highest_sol_version_only():
         "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-sol-latest", "gpt-6-luna")]
     assert newest_sol_model(models) == "gpt-6.1-sol"
     assert newest_sol_model([{"slug": "gpt-7-sol", "visibility": "hide"}, {"slug": "gpt-6-sol"}]) == "gpt-6-sol"
+    assert newest_sol_model([{"slug": "gpt-8-sol", "visibility": "none"},
+                             {"slug": "gpt-6-sol", "visibility": "list"}]) == "gpt-6-sol"
     assert newest_sol_model([{"slug": "gpt-6-astra"}]) is None
 
 

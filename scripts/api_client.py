@@ -122,12 +122,12 @@ def newest_sol_model(models: list[dict]) -> str | None:
 
     Sol is the tier the image tool needs; Astra is the top tier and Luna the
     small one. Aliases such as `gpt-sol-latest` carry no version and are
-    skipped, as are models Codex hides from its picker.
+    skipped, as are models Codex keeps out of its picker (`hide`, `none`).
     """
     import re
     best: tuple[tuple[int, ...], str] | None = None
     for m in models:
-        if m.get("visibility") == "hide":
+        if m.get("visibility", "list") != "list":  # Codex shows only "list" in its picker
             continue
         if match := re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-sol", m.get("slug") or ""):
             version = tuple(int(part) for part in match.group(1).split("."))

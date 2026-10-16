@@ -124,9 +124,8 @@ def fetch_models(
     *, route: codex_route.Route, headers: dict[str, str], cli_version: str, timeout: int = 20,
 ) -> list[dict]:
     """GET the model list from wherever Codex routes requests."""
-    url = route.models_url
-    if route.kind == "chatgpt":
-        url += f"?client_version={_whole_version(cli_version)}"
+    url = (route.url("models", {"client_version": _whole_version(cli_version)})
+           if route.kind == "chatgpt" else route.models_url)
     req = urllib.request.Request(url, headers={**headers, "Accept": "application/json"},
                                  method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
