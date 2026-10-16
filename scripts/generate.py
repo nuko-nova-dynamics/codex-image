@@ -154,15 +154,18 @@ def resolve_orchestrator(
     the skill never pins one."""
     if explicit:
         return explicit, "--orchestrator"
+    failure = "returned no models"
     try:
         if model := api_client.codex_default_model(
                 fetch_models(headers=headers, cli_version=cli_version)):
             return model, "Codex model catalog"
-    except (OSError, http.client.HTTPException, ValueError):
-        pass
+    except urllib.error.HTTPError as e:
+        failure = f"HTTP {e.code}"
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        failure = type(e).__name__
     if model := api_client.codex_default_model(_cached_models(cli_version)):
         return model, "Codex models_cache.json"
-    return None, "none"
+    return None, failure
 
 
 def _post_with_error_handling(
@@ -439,9 +442,14 @@ def main(argv: list[str] | None = None) -> int:
     orchestrator, orchestrator_source = resolve_orchestrator(
         args.orchestrator, headers=headers, cli_version=cli_version)
     if orchestrator is None:
-        print("✗ Could not read Codex's default model (catalog request failed and no "
-              "current ~/.codex/models_cache.json). Run `codex` once, or pass --orchestrator "
-              "<model>.", file=sys.stderr)
+        print(f"✗ Could not read Codex's default model: the model catalog request failed "
+              f"({orchestrator_source}) and there is no models_cache.json from this Codex "
+              f"version.", file=sys.stderr)
+        if orchestrator_source == "HTTP 401":
+            print("→ Run: codex login", file=sys.stderr)
+        else:
+            print("→ Run `codex` once to refresh its cache, or pass --orchestrator <model>.",
+                  file=sys.stderr)
         return 1
     if args.verbose:
         print(f"  orchestrator     = {orchestrator} (from {orchestrator_source})",
