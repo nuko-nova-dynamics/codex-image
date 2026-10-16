@@ -276,3 +276,32 @@ def test_no_catalog_and_no_cache_fails_before_posting(tmp_path, fixture_dir, mon
     assert rc == 1
     assert model is None
     assert "--orchestrator" in capsys.readouterr().err
+
+
+def test_expired_token_on_catalog_says_to_log_in(tmp_path, fixture_dir, monkeypatch, capsys):
+    import io
+    import urllib.error
+
+    def expired(**kw):
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, io.BytesIO(b"token_expired"))
+
+    monkeypatch.setattr(generate, "fetch_models", expired)
+    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert model is None
+    assert "HTTP 401" in err
+    assert "codex login" in err
+
+
+def test_network_failure_reason_is_reported(tmp_path, fixture_dir, monkeypatch, capsys):
+    import urllib.error
+
+    def no_dns(**kw):
+        raise urllib.error.URLError("[Errno 8] nodename nor servname provided")
+
+    monkeypatch.setattr(generate, "fetch_models", no_dns)
+    rc, _, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "URLError: [Errno 8] nodename nor servname provided" in err
