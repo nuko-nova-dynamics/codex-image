@@ -363,3 +363,39 @@ def test_model_list_failure_does_not_print_provider_query_values(tmp_path, monke
     monkeypatch.setattr(generate, "fetch_models", offline)
     assert generate.main(["x", "--out-dir", str(tmp_path / "out")]) == 1
     assert "secret-q" not in capsys.readouterr().err
+
+
+def test_api_calls_refuse_redirects(monkeypatch):
+    import http.server
+    import threading
+    import urllib.error
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append((self.path, self.headers.get("Authorization")))
+            if self.path.startswith("/v1/models"):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/elsewhere")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"data": []}')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/v1/models",
+                                     headers={"Authorization": "Bearer k"})
+        with pytest.raises(urllib.error.HTTPError) as err:
+            generate._OPENER.open(req, timeout=5)
+        assert err.value.code == 302
+        assert [path for path, _ in hits] == ["/v1/models"]
+    finally:
+        server.shutdown()

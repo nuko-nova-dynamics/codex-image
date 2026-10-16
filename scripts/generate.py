@@ -93,6 +93,17 @@ def _detect_codex_cli_version() -> str:
     return m.group(1)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """These API calls never redirect. Refusing keeps the sign-in or provider key
+    from following a redirect to another host; the 3xx surfaces as HTTPError."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def post_responses(
     *,
     body: dict,
@@ -107,7 +118,7 @@ def post_responses(
     data = json.dumps(body).encode()
     req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", errors="replace")
@@ -128,7 +139,7 @@ def fetch_models(
            if route.kind == "chatgpt" else route.models_url)
     req = urllib.request.Request(url, headers={**headers, "Accept": "application/json"},
                                  method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _OPENER.open(req, timeout=timeout) as resp:
         return api_client.model_ids(json.loads(resp.read().decode("utf-8")))
 
 
