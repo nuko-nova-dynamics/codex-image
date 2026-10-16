@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 DEFAULT_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+MODELS_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
 
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh"}
 _REJECTED_BACKEND = {"n", "previous_response_id", "max_tool_calls", "max_output_tokens"}
@@ -17,7 +18,7 @@ def build_body(
     moderation: str | None = None,
     quality_jpeg: int = 90,
     input_images: list[str] | None = None,
-    orchestrator_model: str = "gpt-5.5",
+    orchestrator_model: str,
     image_model: str | None = None,
     reasoning_effort: str = "xhigh",
     instructions: str | None = None,
@@ -93,7 +94,7 @@ def build_headers(
 
     `codex_cli_version` MUST be the user's installed Codex CLI version (or
     a current one), not our skill version. The Codex backend gates feature
-    access (e.g. gpt-5.5) by this header — older versions get HTTP 400
+    access by this header — older versions get HTTP 400
     'requires a newer version of Codex'. The caller is responsible for
     detecting the right value at runtime (see generate.py main()).
     """
@@ -106,3 +107,18 @@ def build_headers(
         "User-Agent": f"codex_cli_rs/{codex_cli_version}",
         "version": codex_cli_version,
     }
+
+
+def codex_default_model(models: list[dict]) -> str | None:
+    """Pick the model Codex itself treats as the default for this account.
+
+    Mirrors Codex's own rule (`mark_default_by_picker_visibility` in
+    openai/codex): sort the account's catalog by `priority`, take the first
+    model shown in the picker, else the first model at all.
+    """
+    ranked = sorted((m for m in models if m.get("slug")),
+                    key=lambda m: m.get("priority", float("inf")))
+    for model in ranked:
+        if model.get("visibility") == "list":
+            return model["slug"]
+    return ranked[0]["slug"] if ranked else None

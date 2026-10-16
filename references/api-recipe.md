@@ -22,11 +22,11 @@ The `version` and `User-Agent` carry the user's installed Codex CLI version (det
 
 ## Body shape (single generation)
 
-The request `model` is the *orchestrator* (`gpt-5.5` by default, `--orchestrator` to change), which invokes the `image_generation` tool. By default the endpoint selects the image model. `--image-model` adds `model` inside that tool as an experimental request; the top-level model stays the orchestrator. See [GPT Image 2.5 compatibility](gpt-image-2.5.md) for live override evidence.
+The request `model` is the *orchestrator*, which invokes the `image_generation` tool. The skill pins no orchestrator: by default it uses the model Codex treats as this account's default, read from `GET /backend-api/codex/models?client_version=<codex version>` (the account's catalog, sorted by `priority`, first model with `visibility: "list"`), falling back to Codex's `~/.codex/models_cache.json`. `--orchestrator` or `CODEX_IMAGE_ORCHESTRATOR` overrides it. By default the endpoint selects the image model. `--image-model` adds `model` inside that tool as an experimental request; the top-level model stays the orchestrator. See [GPT Image 2.5 compatibility](gpt-image-2.5.md) for live override evidence.
 
 ```json
 {
-  "model": "gpt-5.5",
+  "model": "<orchestrator>",
   "instructions": "Pass-through image generator. ...",
   "input": [{
     "type": "message",

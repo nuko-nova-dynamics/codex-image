@@ -38,7 +38,7 @@ To request one, pass `--image-model <model-id>`; omit it to keep Codex Responses
 This flag is experimental on the subscription transport: live checks on 2026-09-08 requested each variant but both responses reported `gpt-image-2-codex`.
 Do not claim a 2.5 upgrade from a successful request alone. A legacy response alias or C2PA version `2.0` also does not prove older weights: an image published in OpenAI's 2.5 announcement carries that same provenance version.
 The script warns when the reported model differs or is missing; inspect the sidecar's `image_model` separately from `requested_image_model`.
-`--orchestrator` selects the mainline model that calls the image tool, not Sunburst or Flare.
+`--orchestrator` selects the mainline model that calls the image tool, not Sunburst or Flare. Leave it out: the script follows Codex's current default model for the account, so a retired model never breaks it.
 
 Read [GPT Image 2.5 compatibility](references/gpt-image-2.5.md) for verified transport behavior and the official sources.
 Public API support for model selection, `xhigh`/`max`, and transparency does not establish the same behavior on Codex Responses.
