@@ -336,3 +336,30 @@ def test_provider_route_needs_no_chatgpt_sign_in(tmp_path, monkeypatch):
                         "endpoint": "http://127.0.0.1:8317/v1/responses",
                         "auth": "Bearer k-test"}
     assert json.loads(target.with_suffix(".png.json").read_text())["account_id"] == "provider:proxy"
+
+
+def test_unreadable_codex_config_is_a_clean_error(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text('model_provider = "p\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    assert generate.main(["x", "--out-dir", str(tmp_path / "out")]) == 2
+    assert capsys.readouterr().err.startswith("✗ Cannot read Codex's config")
+
+
+def test_model_list_failure_does_not_print_provider_query_values(tmp_path, monkeypatch, capsys):
+    import urllib.error
+
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        'model_provider = "p"\n[model_providers.p]\nbase_url = "http://p/v1"\n'
+        'experimental_bearer_token = "k"\n[model_providers.p.query_params]\nkey = "secret-q"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+
+    def offline(**kw):
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(generate, "fetch_models", offline)
+    assert generate.main(["x", "--out-dir", str(tmp_path / "out")]) == 1
+    assert "secret-q" not in capsys.readouterr().err

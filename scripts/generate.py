@@ -331,8 +331,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # 1. Route and auth: go wherever Codex's config sends Codex.
-    codex_config = codex_route.effective_config()
     try:
+        codex_config = codex_route.effective_config()
         route = codex_route.resolve_route(codex_config)
     except codex_route.RouteError as e:
         print(f"✗ {e}", file=sys.stderr)
@@ -473,7 +473,7 @@ def main(argv: list[str] | None = None) -> int:
         args.orchestrator, route=route, headers=headers, cli_version=cli_version,
         config_model=codex_config.get("model"))
     if orchestrator is None:
-        print(f"✗ Could not pick a model: the model list request to {route.models_url} "
+        print(f"✗ Could not pick a model: the model list request to {route.base_url} "
               f"failed ({orchestrator_source}) and nothing else named one.", file=sys.stderr)
         if orchestrator_source == "HTTP 401":
             print("→ Run: codex login" if route.kind == "chatgpt" else
