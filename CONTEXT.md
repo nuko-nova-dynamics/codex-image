@@ -6,7 +6,7 @@ A skill that generates and edits images through the user's ChatGPT subscription,
 
 ### Transports
 
-Three distinct surfaces reach OpenAI image models. Conflating them is the single most common source of confusion in this project, because they have different capabilities and the public documentation describes only the third.
+Three distinct surfaces reach OpenAI image models. Conflating them is the single most common source of confusion in this project, because they have different capabilities and the public documentation describes the public APIs, not the Codex Responses subscription transport.
 
 **Codex Responses**:
 The endpoint this skill talks to, reached with the Codex CLI's OAuth token. Everything in `scripts/` targets it.
@@ -17,7 +17,7 @@ Codex CLI's own image tool, reachable only from inside a Codex session. Not reac
 _Avoid_: "the Codex tool"
 
 **Images API**:
-OpenAI's public REST surface. Requires an API key, which this skill deliberately does not use.
+OpenAI's public image REST surface. The public Responses API also offers an image-generation tool with its own documented contract. Requires an API key, which this skill deliberately does not use.
 _Avoid_: "the official API"
 
 ### Transparency
@@ -53,7 +53,7 @@ The mainline model named in the request `model` field. It calls the image tool; 
 _Avoid_: "the model" unqualified
 
 **Image model**:
-The model that actually renders pixels. The backend selects it and echoes its identity on the response; this skill cannot choose it.
+The model that actually renders pixels. The backend echoes its identity on the response. The skill can request a variant with `--image-model`, but Codex Responses may override it. Keep requested and reported identities separate.
 _Avoid_: asserting a specific image model in prose — read it from the response
 
 **Reference**:

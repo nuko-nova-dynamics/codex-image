@@ -22,7 +22,7 @@ The `version` and `User-Agent` carry the user's installed Codex CLI version (det
 
 ## Body shape (single generation)
 
-The request `model` is the *orchestrator* (`gpt-5.5` by default, `--orchestrator` to change), which invokes the `image_generation` tool — the actual image model, `gpt-image-2`. That's why docs elsewhere say "gpt-image-2" while the wire body never mentions it.
+The request `model` is the *orchestrator* (`gpt-5.5` by default, `--orchestrator` to change), which invokes the `image_generation` tool. By default the endpoint selects the image model. `--image-model` adds `model` inside that tool as an experimental request; the top-level model stays the orchestrator. See [GPT Image 2.5 compatibility](gpt-image-2.5.md) for live override evidence.
 
 ```json
 {
@@ -82,7 +82,7 @@ Send `background: "auto"` and append a transparency request to the prompt text. 
 
 Never send `background: "transparent"`. Full reasoning, evidence, and the free re-test recipe are in [ADR-0001](../docs/adr/0001-request-transparency-in-the-prompt.md).
 
-### Why it is refused
+### Historical transparency behavior (2026-08-21)
 
 The backend pins its own image model and echoes it at `response.tools[0].model`:
 
@@ -96,9 +96,9 @@ OpenAI's 2026-08-20 changelog granted transparent-background support to `gpt-ima
 
 The wire schema already accepts the value — a nonsense background returns `"Supported values are: 'transparent', 'opaque', and 'auto'."` from an earlier validation layer — so only the model-capability gate is closed.
 
-### Re-testing is free
+### Re-testing
 
-Rejections happen at request validation, before any generation, so they cost no quota. Send `background: "transparent"`; a 400 means the gate is still closed. Verified closed on 2026-08-21 with codex-cli 0.149.0.
+A validation rejection produces no image, but a previously rejected request may now succeed and consume a generation. Verified closed on 2026-08-21 with codex-cli 0.149.0.
 
 ### Resolved parameters are advisory
 

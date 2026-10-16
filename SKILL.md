@@ -9,7 +9,7 @@ metadata:
 
 # codex-image
 
-Generate and edit images with `gpt-image-2` via the user's ChatGPT subscription. Output lands in `./generated_images/` (or `--out-dir` / `--out`).
+Generate and edit images with GPT Image via the user's ChatGPT subscription. Output lands in `./generated_images/` (or `--out-dir` / `--out`).
 
 ## How to run
 
@@ -31,11 +31,23 @@ Requirements the script checks for you:
 
 The script is mechanical — it does no semantic routing. Continuation handling, batch decisions, and background-removal dispatch are YOUR job, based on the conversation.
 
+## GPT Image 2.5
+
+OpenAI offers `gpt-image-2.5-sunburst` for precise editing and `gpt-image-2.5-flare` for faster everyday generation.
+To request one, pass `--image-model <model-id>`; omit it to keep Codex Responses' default selection.
+This flag is experimental on the subscription transport: live checks on 2026-09-08 requested each variant but both responses reported `gpt-image-2-codex`.
+Do not claim a 2.5 upgrade from a successful request alone. A legacy response alias or C2PA version `2.0` also does not prove older weights: an image published in OpenAI's 2.5 announcement carries that same provenance version.
+The script warns when the reported model differs or is missing; inspect the sidecar's `image_model` separately from `requested_image_model`.
+`--orchestrator` selects the mainline model that calls the image tool, not Sunburst or Flare.
+
+Read [GPT Image 2.5 compatibility](references/gpt-image-2.5.md) for verified transport behavior and the official sources.
+Public API support for model selection, `xhigh`/`max`, and transparency does not establish the same behavior on Codex Responses.
+
 ## Continuation handling
 
 When the request modifies the image generated in the immediately-preceding turn ("make it darker", "now add a hat", "more contrast"), pass `--from-last` — the script re-uses the last generation automatically (tracked in `~/.codex-image/last.json`), so you don't have to recover the path from the transcript.
 
-For edits to an explicit file or an older generation, pass `--input <path|url>` instead (repeatable; max 16 references combined with `--from-last` — the gpt-image-2 model limit).
+For edits to an explicit file or an older generation, pass `--input <path|url>` instead (repeatable; max 16 references combined with `--from-last`; the skill reference cap).
 
 When the request is a fresh subject — even if phrased "now make…" — pass neither and generate from scratch. If you guess wrong and the user says "no, I meant a new one", re-run without references.
 
@@ -75,8 +87,8 @@ Chroma edge repair: thin fringe → `--edge-contract 1`; stair-stepped edges on 
 
 ## Quality, cost & time guardrails
 
-- The flag default is `--quality high`, but the OAuth route silently caps it to `medium` — requesting `high` buys nothing here (true `high` needs an API key). For iteration, pass `--quality low`: it's much faster and often good enough. Escalate only for final output, dense in-image text, or close-up faces.
-- Each image takes ~15–60 s of wall time and counts against the user's ChatGPT plan rate limits (subscription usage, not per-image dollar billing).
+- The default is `--quality high`; `low`, `medium`, `high`, `xhigh`, `max`, and `auto` are accepted requests. Start with `low` for drafts. Codex Responses may override quality; inspect `resolved_quality` in the sidecar or `--verbose` output before claiming a level was delivered.
+- Generations count against the user's ChatGPT plan limits. Latency varies by model, prompt, quality, and service load.
 - Before generating more than 3 images for a single request, confirm with the user first.
 - Never loop indefinitely. "Many" / "a whole set" → pick a sensible default (4) and offer to continue.
 - HTTP 429 from the backend = stop immediately, do not retry.
@@ -112,7 +124,7 @@ NEVER print or log the user's `access_token`, `id_token`, `refresh_token`, or an
 
 ## When NOT to invoke
 
-- Vector art, SVG, ASCII art, or LaTeX diagrams → not `gpt-image-2`'s strength; use a dedicated tool.
+- Vector art, SVG, ASCII art, or LaTeX diagrams → use a dedicated vector or diagram tool.
 - The user explicitly wants a different model or product (DALL-E, Stable Diffusion, Midjourney) → defer to that.
 
 For production logo/brand work, do invoke — but set expectations: generate explorations and refine with single-change `--from-last` iterations rather than promising a final asset in one shot (templates in `references/prompting-cookbook.md`).

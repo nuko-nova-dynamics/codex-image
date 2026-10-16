@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental GPT Image 2.5 Sunburst/Flare requests via `--image-model`, plus `xhigh` and `max` quality requests. Codex Responses may override these values; existing default selection is preserved.
+- Requested image model and resolved quality in sidecars, model mismatch warnings, and GPT Image 2.5 compatibility guidance backed by live subscription-endpoint probes.
+
 ### Changed
 
+- `--quality high` no longer prints an advisory that the OAuth route caps quality to medium. That cap was not verified across models and plans; the sidecar now records the quality the response reports as `resolved_quality`.
 - The `SKILL.md` description now lists only when to use the skill: generating or editing any image, follow-up edits, and transparent cutouts. What the skill does and how it bills moved out of the description, which stays loaded in every session.
 - CI markdownlint now covers `AGENTS.md`, `CONTEXT.md`, and `docs/**/*.md` — 17 files instead of 14. The files added in 0.2.0 were only ever linted by hand.
 

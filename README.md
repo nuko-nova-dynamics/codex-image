@@ -1,6 +1,6 @@
 # codex-image
 
-> A Claude Code skill that generates and edits images with `gpt-image-2`, billed to your ChatGPT subscription. No `OPENAI_API_KEY` required.
+> A Claude Code skill that generates and edits images with GPT Image, billed to your ChatGPT subscription. No `OPENAI_API_KEY` required.
 
 [![skills.sh](https://skills.sh/b/nuko-nova-dynamics/codex-image)](https://skills.sh/nuko-nova-dynamics/codex-image)
 [![release](https://img.shields.io/badge/release-v0.2.0-blue)](CHANGELOG.md)
@@ -9,7 +9,7 @@
 
 ## Why
 
-The Codex desktop app and Codex CLI both generate images via `gpt-image-2`, billed to your ChatGPT subscription. But opening the app to make one image is friction. This skill lets you do it from any Claude Code session in a single slash command.
+This skill generates images through Codex Responses, billed to your ChatGPT subscription, from a single command in your agent session.
 
 ```
 /codex-image "a yellow taxi at night in rain"
@@ -84,9 +84,17 @@ Recognized env vars: `CODEX_IMAGE_SIZE`, `CODEX_IMAGE_QUALITY`, `CODEX_IMAGE_FOR
 
 This skill talks to the same backend route the Codex CLI itself uses (`chatgpt.com/backend-api/codex/responses`), authenticated by the auth file Codex maintains. That route is not a public, versioned API: a Codex update that changes token storage, required headers, or version gating can break the skill until it's patched. Treat it as tested-against-current-Codex rather than contractually stable; the durable fallback is the official OpenAI Images API with an `OPENAI_API_KEY`.
 
+## GPT Image 2.5
+
+Request either new variant with `--image-model gpt-image-2.5-sunburst` or `--image-model gpt-image-2.5-flare`.
+The CLI also accepts `--quality xhigh` and `--quality max`.
+These are experimental requests on Codex Responses: the endpoint may override them, and the default still leaves model selection to the endpoint.
+The sidecar records requested and returned values separately; a model mismatch produces a warning.
+See [compatibility and live checks](references/gpt-image-2.5.md) before relying on a particular model or quality.
+
 ## Known limitations
 
-- **Quality cap:** the OAuth route silently caps `quality: high` to `medium` regardless of plan (Plus, Pro, Business). True `high` requires `OPENAI_API_KEY`.
+- **Model and quality requests may be overridden:** inspect `image_model` and `resolved_quality` in the sidecar. Explicit Sunburst and Flare probes on 2026-09-08 both reported `gpt-image-2-codex`.
 - **Transparency is requested in the prompt, not the parameter.** `background: "transparent"` is rejected by this backend, but the model returns real alpha when asked in the prompt with `background: "auto"` — which is what `--transparent` does. Verified on opaque subjects; hair, glass, smoke and translucency are untested, so the chroma path survives as `--transparent-mode chroma`. See [ADR-0001](docs/adr/0001-request-transparency-in-the-prompt.md).
 - **No batch:** the backend rejects `n`. Multiple images = multiple invocations.
 - **No multi-turn via `previous_response_id`:** backend is stateless. Multi-turn is achieved by the agent re-passing the prior image (`--from-last` / `--input`, up to 16 references).

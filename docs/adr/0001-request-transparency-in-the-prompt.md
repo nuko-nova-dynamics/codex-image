@@ -9,6 +9,15 @@ The image model behind the Codex OAuth transport can return a genuine alpha chan
 
 **Do not "fix" this by sending `background: "transparent"`.** It will look like the obvious correction, because OpenAI's public documentation says to do exactly that. It returns HTTP 400 and no image.
 
+## GPT Image 2.5 follow-up (2026-09-08)
+
+The public API now documents explicit Sunburst and Flare selection.
+Codex Responses probes requesting each variant with an opaque background still reported `gpt-image-2-codex`.
+This verifies that the requested identities were not returned; it does not prove that the model field can never be honored.
+The skill exposes an experimental request flag and preserves the response identity separately.
+Transparency was not retested; this decision remains in effect.
+See [compatibility checks](../../references/gpt-image-2.5.md).
+
 ## Why the parameter is refused
 
 The backend pins its own image model variant and echoes it on the response at `response.tools[0].model`:
@@ -57,6 +66,6 @@ Two live runs on 2026-08-21 sent `auto` and received `"background": "transparent
 
 ## Re-checking this decision
 
-A rejected request costs nothing, so re-testing is free. Send `background: "transparent"` with any prompt. A 400 means the gate is still closed. Anything else means the parameter has been un-gated and this ADR should be revisited in favour of the explicit, more reliable mechanism.
+Validation rejections produce no image, but a successful probe consumes a generation. Send `background: "transparent"` with any prompt. A 400 means the gate is still closed. Anything else means the parameter has been un-gated and this ADR should be revisited in favour of the explicit, more reliable mechanism.
 
 The untried experiment, also free unless it succeeds: send `model: "gpt-image-2"` together with `background: "transparent"`. If the backend honours the override, a variant that *is* in the rollout would handle it. We never learned whether the model field is honoured, because the transparency check fires before model-value validation.

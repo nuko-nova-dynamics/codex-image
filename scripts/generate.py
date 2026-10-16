@@ -148,7 +148,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     p = argparse.ArgumentParser(
         prog="codex-image",
-        description="Generate images with gpt-image-2 via ChatGPT OAuth.",
+        description="Generate images with GPT Image via ChatGPT OAuth.",
     )
     p.add_argument("prompt", help="Text prompt")
 
@@ -161,7 +161,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--size", type=_size_type,
                    default=os.environ.get("CODEX_IMAGE_SIZE", "1024x1024"))
     p.add_argument("--quality", default=os.environ.get("CODEX_IMAGE_QUALITY", "high"),
-                   choices=["low", "medium", "high", "auto"])
+                   choices=["low", "medium", "high", "xhigh", "max", "auto"])
+    p.add_argument("--image-model", default=None,
+                   choices=["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"],
+                   help="Request an image model (experimental on Codex OAuth; "
+                        "the endpoint may override it). Omit for backend selection.")
     p.add_argument("--format", dest="output_format",
                    default=os.environ.get("CODEX_IMAGE_FORMAT", "png"),
                    choices=["png", "jpeg", "webp"])
@@ -208,7 +212,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--out", default=None)
     p.add_argument("--out-dir", default=os.environ.get("CODEX_IMAGE_OUT_DIR", "./generated_images"))
     p.add_argument("--input", action="append", default=[],
-                   help="Reference image (path/URL/data: URL). Repeatable, max 16 (gpt-image-2 model limit).")
+                   help="Reference image (path/URL/data: URL). Repeatable, max 16 (skill reference cap).")
     p.add_argument("--from-last", action="store_true",
                    help="Prepend ~/.codex-image/last.json image as a reference")
     p.add_argument("--no-meta", action="store_true")
@@ -288,10 +292,6 @@ def main(argv: list[str] | None = None) -> int:
     _maybe_show_banner(summary)
 
     # 2. Build request
-    if args.quality == "high":
-        print("ℹ --quality high: OAuth route caps to medium (true high requires API key)",
-              file=sys.stderr)
-
     import input_refs
 
     refs: list[str] = []
@@ -321,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(unique_refs) > 16:
         print(f"✗ --input/--from-last combined would send {len(unique_refs)} references; "
-              f"max is 16 (gpt-image-2 model limit). Drop some references.", file=sys.stderr)
+              f"max is 16 (skill reference cap). Drop some references.", file=sys.stderr)
         return 1
 
     resolved: list[str] = []
@@ -383,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         quality_jpeg=args.quality_jpeg,
         input_images=resolved or None,
         orchestrator_model=args.orchestrator,
+        image_model=args.image_model,
         reasoning_effort=args.effort,
     )
     try:
@@ -423,7 +424,14 @@ def main(argv: list[str] | None = None) -> int:
 
     meta = sse_parser.extract_response_metadata(sse)
 
+    if args.image_model and meta.get("image_model") != args.image_model:
+        resolved_model = redact.redact_text(str(meta.get("image_model") or "unreported"))
+        print(f"⚠ Requested image model {args.image_model}; endpoint reported "
+              f"{resolved_model}. Requested model use is not verified.", file=sys.stderr)
+
     if args.verbose:
+        print(f"  image_model      = {redact.redact_text(str(meta.get('image_model')))}",
+              file=sys.stderr)
         # meta values are server-derived; redact before printing (spec: token-safe diagnostics)
         print(f"  response_id      = {meta.get('response_id')}", file=sys.stderr)
         print(f"  resolved_size    = {meta.get('resolved_size')}", file=sys.stderr)
@@ -549,6 +557,8 @@ def main(argv: list[str] | None = None) -> int:
         ts=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         account_id=af.account_id,
         image_model=meta.get("image_model"),
+        requested_image_model=args.image_model,
+        resolved_quality=meta.get("resolved_quality"),
         resolved_background=meta.get("resolved_background"),
         transparency_mode=transparent_mode if is_transparent else None,
     )
