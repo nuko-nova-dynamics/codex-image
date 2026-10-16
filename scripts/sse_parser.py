@@ -127,6 +127,11 @@ def extract_response_metadata(raw: str) -> dict:
             meta["response_id"] = resp.get("id")
             if model := _image_tool_model(resp):
                 meta["image_model"] = model
+        elif ev_type == "response.image_generation_call.partial_image":
+            # The partial-image fallback may be the only saved result; later
+            # final items override this.
+            if ev.get("quality") is not None:
+                meta["resolved_quality"] = ev["quality"]
         elif ev_type == "response.output_item.done":
             item = ev.get("item") or {}
             if item.get("type") == "image_generation_call":

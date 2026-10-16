@@ -58,3 +58,15 @@ def test_completed_metadata_overrides_created_model_and_handles_output():
     assert meta["image_model"] == "gpt-image-2-codex"
     assert meta["resolved_quality"] == "low"
     assert meta["resolved_size"] == "1254x1254"
+
+
+def test_partial_image_fallback_keeps_reported_quality():
+    import json
+
+    events = [
+        {"type": "response.image_generation_call.partial_image",
+         "partial_image_b64": "UEFSVElBTA==", "partial_image_index": 0, "quality": "medium"},
+        {"type": "response.completed", "response": {"output": []}},
+    ]
+    meta = extract_response_metadata("".join(f"data: {json.dumps(ev)}\n\n" for ev in events))
+    assert meta["resolved_quality"] == "medium"
