@@ -8,12 +8,11 @@ def _parse(*args):
     return generate.parse_args(list(args))
 
 
-def test_orchestrator_default_and_choices():
-    assert _parse("x").orchestrator == "gpt-5.5"
-    assert _parse("x", "--orchestrator", "gpt-5.4").orchestrator == "gpt-5.4"
-    assert _parse("x", "--orchestrator", "gpt-5.4-mini").orchestrator == "gpt-5.4-mini"
-    with pytest.raises(SystemExit):
-        _parse("x", "--orchestrator", "gpt-7-imaginary")
+def test_orchestrator_is_unpinned(monkeypatch):
+    assert _parse("x").orchestrator is None
+    assert _parse("x", "--orchestrator", "any-future-model").orchestrator == "any-future-model"
+    monkeypatch.setenv("CODEX_IMAGE_ORCHESTRATOR", "from-env")
+    assert _parse("x").orchestrator == "from-env"
 
 
 def test_effort_default_xhigh_and_choices():
@@ -103,11 +102,11 @@ def test_orchestrator_passed_through_to_body(tmp_path, fixture_dir, monkeypatch)
         return f'event: response.output_item.done\ndata: {{"type":"response.output_item.done","item":{{"id":"i","type":"image_generation_call","status":"completed","result":"{fake_b64}"}}}}\n\n'
     monkeypatch.setattr(generate, "post_responses", fake_post)
 
-    generate.main(["x", "--orchestrator", "gpt-5.4-mini", "--effort", "low",
+    generate.main(["x", "--orchestrator", "explicit-model", "--effort", "low",
                    "--moderation", "low", "--background", "auto",
                    "--out-dir", str(tmp_path / "out"), "--quality", "low"])
     body = captured["body"]
-    assert body["model"] == "gpt-5.4-mini"
+    assert body["model"] == "explicit-model"
     assert body["reasoning"] == {"effort": "low"}
     tool = body["tools"][0]
     assert tool["moderation"] == "low"
@@ -197,3 +196,59 @@ def test_requested_model_is_separate_from_observed(tmp_path, fixture_dir, monkey
     assert record["resolved_quality"] == "low"
     assert ("Requested model use is not verified" in capsys.readouterr().err) == (
         reported != "gpt-image-2.5-flare")
+
+
+def _run_capturing_model(tmp_path, fixture_dir, monkeypatch, *extra):
+    import base64
+    home = tmp_path / "codex-home"
+    home.mkdir(exist_ok=True)
+    (home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
+    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
+    captured = {}
+
+    def fake_post(*, body, headers, **kw):
+        captured["model"] = body["model"]
+        return ('event: response.output_item.done\ndata: {"type":"response.output_item.done",'
+                f'"item":{{"type":"image_generation_call","result":"{fake_b64}"}}}}\n\n')
+
+    monkeypatch.setattr(generate, "post_responses", fake_post)
+    rc = generate.main(["x", "--out-dir", str(tmp_path / "out"), *extra])
+    return rc, captured.get("model"), home
+
+
+def test_default_orchestrator_comes_from_codex_catalog(tmp_path, fixture_dir, monkeypatch):
+    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
+    assert rc == 0
+    assert model == "gpt-catalog-default"
+
+
+def test_cache_is_used_when_catalog_request_fails(tmp_path, fixture_dir, monkeypatch):
+    import json
+    import urllib.error
+
+    def offline(**kw):
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(generate, "fetch_models", offline)
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "models_cache.json").write_text(json.dumps({"models": [
+        {"slug": "cached-default", "priority": 1, "visibility": "list"}]}))
+    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
+    assert rc == 0
+    assert model == "cached-default"
+
+
+def test_no_catalog_and_no_cache_fails_before_posting(tmp_path, fixture_dir, monkeypatch, capsys):
+    import urllib.error
+
+    def offline(**kw):
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(generate, "fetch_models", offline)
+    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
+    assert rc == 1
+    assert model is None
+    assert "--orchestrator" in capsys.readouterr().err

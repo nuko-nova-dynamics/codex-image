@@ -32,3 +32,13 @@ def make_jwt():
 @pytest.fixture
 def fixture_dir() -> Path:
     return FIXTURE_DIR
+
+
+@pytest.fixture(autouse=True)
+def _offline_model_catalog(monkeypatch):
+    """Tests never reach the live Codex model catalog; individual tests override this."""
+    import generate
+    monkeypatch.setattr(generate, "fetch_models", lambda **kw: [
+        {"slug": "gpt-catalog-default", "priority": 1, "visibility": "list"},
+    ])
+    monkeypatch.delenv("CODEX_IMAGE_ORCHESTRATOR", raising=False)

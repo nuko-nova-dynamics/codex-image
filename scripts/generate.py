@@ -113,6 +113,45 @@ def post_responses(
         raise
 
 
+def fetch_models(*, headers: dict[str, str], cli_version: str, timeout: int = 20) -> list[dict]:
+    """GET the account's Codex model catalog, the same list Codex's model picker uses."""
+    req = urllib.request.Request(
+        f"{api_client.MODELS_ENDPOINT}?client_version={cli_version}",
+        headers={**headers, "Accept": "application/json"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8")).get("models") or []
+
+
+def _cached_models() -> list[dict]:
+    """Codex's own on-disk copy of the catalog (refreshed whenever Codex runs)."""
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        return json.loads((home / "models_cache.json").read_text()).get("models") or []
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def resolve_orchestrator(
+    explicit: str | None, *, headers: dict[str, str], cli_version: str,
+) -> tuple[str | None, str]:
+    """Return (model, source). An explicit choice wins; otherwise follow Codex's
+    current default, from the live catalog or Codex's cache. Models retire, so
+    the skill never pins one."""
+    if explicit:
+        return explicit, "--orchestrator"
+    try:
+        if model := api_client.codex_default_model(
+                fetch_models(headers=headers, cli_version=cli_version)):
+            return model, "Codex model catalog"
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        pass
+    if model := api_client.codex_default_model(_cached_models()):
+        return model, "Codex models_cache.json"
+    return None, "none"
+
+
 def _post_with_error_handling(
     *, body: dict, headers: dict[str, str]
 ) -> tuple[str | None, int | None]:
@@ -202,8 +241,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Chroma removal: soften the alpha edge; for stair-stepped edges on matte subjects (0-64)")
 
     # Orchestrator params
-    p.add_argument("--orchestrator", default="gpt-5.5",
-                   choices=["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"])
+    p.add_argument("--orchestrator", default=os.environ.get("CODEX_IMAGE_ORCHESTRATOR"),
+                   help="Model that calls the image tool. Omit to use Codex's current "
+                        "default for this account.")
     p.add_argument("--effort", default="xhigh",
                    choices=["low", "medium", "high", "xhigh"],
                    help="(minimal/none rejected by backend for image_gen)")
@@ -373,19 +413,6 @@ def main(argv: list[str] | None = None) -> int:
               "not the model's own alpha", file=sys.stderr)
         effective_prompt = transparency.apply_chroma_key_suffix(args.prompt, key)
 
-    body = api_client.build_body(
-        prompt=effective_prompt,
-        size=args.size,
-        quality=args.quality,
-        output_format=args.output_format,
-        background=effective_background,
-        moderation=args.moderation,
-        quality_jpeg=args.quality_jpeg,
-        input_images=resolved or None,
-        orchestrator_model=args.orchestrator,
-        image_model=args.image_model,
-        reasoning_effort=args.effort,
-    )
     try:
         cli_version = _detect_codex_cli_version()
     except CodexCliError as e:
@@ -395,6 +422,30 @@ def main(argv: list[str] | None = None) -> int:
         access_token=af.access_token,
         account_id=af.account_id,
         codex_cli_version=cli_version,
+    )
+    orchestrator, orchestrator_source = resolve_orchestrator(
+        args.orchestrator, headers=headers, cli_version=cli_version)
+    if orchestrator is None:
+        print("✗ Could not read Codex's default model (catalog request failed and no "
+              "~/.codex/models_cache.json). Run `codex` once, or pass --orchestrator "
+              "<model>.", file=sys.stderr)
+        return 1
+    if args.verbose:
+        print(f"  orchestrator     = {orchestrator} (from {orchestrator_source})",
+              file=sys.stderr)
+
+    body = api_client.build_body(
+        prompt=effective_prompt,
+        size=args.size,
+        quality=args.quality,
+        output_format=args.output_format,
+        background=effective_background,
+        moderation=args.moderation,
+        quality_jpeg=args.quality_jpeg,
+        input_images=resolved or None,
+        orchestrator_model=orchestrator,
+        image_model=args.image_model,
+        reasoning_effort=args.effort,
     )
 
     # 3. POST + parse
