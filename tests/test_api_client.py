@@ -58,6 +58,12 @@ def test_build_headers_set_required_fields():
     assert "OpenAI-Beta" not in headers
 
 
+def test_newest_image_model_accepts_proxy_prefixed_ids():
+    assert newest_image_model([{"slug": "team/gpt-image-2"}, {"slug": "team/gpt-image-2.6-flare"},
+                               {"slug": "team/gpt-6.1-sol"}]) == "team/gpt-image-2.6-flare"
+    assert newest_image_model([{"slug": "team/gpt-image-2.6"}, {"slug": "gpt-image-2.6"}]) == "gpt-image-2.6"
+
+
 def test_newest_image_model_orders_by_version_then_plain_over_variant():
     models = [{"slug": s} for s in (
         "gpt-image-1.5", "gpt-image-2.6-flare", "gpt-image-2.5", "gpt-image-2",

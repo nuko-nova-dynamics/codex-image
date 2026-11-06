@@ -98,18 +98,21 @@ def newest_image_model(models: list[dict]) -> str | None:
     """The highest-versioned `gpt-image-*` model a route lists.
 
     At equal versions the plain name (`gpt-image-2.6`) wins over a variant
-    (`gpt-image-2.6-flare`). Returns None when the list has no image model,
-    which is normal for the ChatGPT catalog: it lists chat models only.
+    (`gpt-image-2.6-flare`), and an unprefixed ID over a proxy-prefixed one
+    (`team/gpt-image-2.6`). A prefixed ID is matched on its last path part and
+    returned whole, because the proxy routes on the prefix. Returns None when
+    the list has no image model, which is normal for the ChatGPT catalog: it
+    lists chat models only.
     """
-    best: tuple[tuple[int, ...], int, str] | None = None
+    best: tuple[tuple[int, ...], int, int, str] | None = None
     for m in models:
         slug = m.get("slug") or ""
-        if match := _IMAGE_MODEL.fullmatch(slug):
+        if match := _IMAGE_MODEL.fullmatch(slug.rsplit("/", 1)[-1]):
             version = tuple(int(part) for part in match.group(1).split("."))
-            key = (version, 0 if match.group(2) else 1, slug)
-            if best is None or key[:2] > best[:2]:
+            key = (version, 0 if match.group(2) else 1, 0 if "/" in slug else 1, slug)
+            if best is None or key[:3] > best[:3]:
                 best = key
-    return best[2] if best else None
+    return best[3] if best else None
 
 
 def extract_image(resp: dict) -> tuple[str, dict]:
