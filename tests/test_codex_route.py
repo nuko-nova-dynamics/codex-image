@@ -22,7 +22,7 @@ def test_user_config_overrides_system(tmp_path, monkeypatch):
 def test_default_route_is_chatgpt():
     route = codex_route.resolve_route({})
     assert (route.kind, route.base_url) == ("chatgpt", codex_route.CHATGPT_BASE_URL)
-    assert route.responses_url == codex_route.CHATGPT_BASE_URL + "/responses"
+    assert route.url("images/generations") == codex_route.CHATGPT_BASE_URL + "/images/generations"
 
 
 def test_openai_base_url_keeps_chatgpt_sign_in_at_the_relay():
@@ -38,8 +38,9 @@ def test_custom_provider_route_uses_its_url_and_key():
                                       "experimental_bearer_token": "k-1",
                                       "http_headers": {"X-Test": "1"}}},
     })
-    assert (route.kind, route.responses_url) == ("provider", "http://127.0.0.1:8317/v1/responses")
+    assert (route.kind, route.url("images/edits")) == ("provider", "http://127.0.0.1:8317/v1/images/edits")
     headers = codex_route.provider_headers(route)
+    assert headers["Accept"] == "application/json"
     assert headers["Authorization"] == "Bearer k-1"
     assert headers["X-Test"] == "1"
 

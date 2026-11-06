@@ -4,12 +4,12 @@ description: "Use when the user asks to generate or edit an image of any kind, w
 license: MIT
 metadata:
   author: nuko-nova-dynamics
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # codex-image
 
-Generate and edit images with GPT Image via the user's ChatGPT subscription. Output lands in `./generated_images/` (or `--out-dir` / `--out`).
+Generate and edit images with GPT Image via the user's ChatGPT subscription. The script calls the Images endpoints (`images/generations`, `images/edits`) the same way Codex's built-in image tool does, on whatever route Codex's own config uses: chatgpt.com, a relay, or a proxy. Output lands in `./generated_images/` (or `--out-dir` / `--out`).
 
 ## How to run
 
@@ -24,24 +24,18 @@ Never invoke a bare relative `scripts/generate.sh`: your working directory is th
 Requirements the script checks for you:
 
 - `python3` ≥ 3.10 on PATH (bash + stdlib Python otherwise).
-- **Pillow — only for `--format webp` and `--transparent-mode chroma`.** Not installed by default; those runs fail fast with the install command (`python3 -m pip install 'Pillow>=10'`). Plain `--transparent` does **not** need it. Mention this prerequisite before first use of either.
+- **Pillow — only for `--format jpeg`, `--format webp` and `--transparent-mode chroma`.** The backend always returns PNG, so other formats are converted locally. Not installed by default; those runs fail fast with the install command (`python3 -m pip install 'Pillow>=10'`). Plain `--transparent` does **not** need it. Mention this prerequisite before first use.
 - Codex CLI signed in. If it isn't, the script exits with `Run: codex login` — relay that to the user rather than touching auth yourself.
 
 `bash "<skill-dir>/scripts/generate.sh" --help` prints the full flag surface; consult it before improvising flags. Where the host agent supports typed slash commands, `/codex-image "<prompt>" --flags` is user-facing shorthand for exactly this script call.
 
 The script is mechanical — it does no semantic routing. Continuation handling, batch decisions, and background-removal dispatch are YOUR job, based on the conversation.
 
-## GPT Image 2.5
+## Size, quality and model
 
-OpenAI offers `gpt-image-2.5-sunburst` for precise editing and `gpt-image-2.5-flare` for faster everyday generation.
-To request one, pass `--image-model <model-id>`; omit it to keep Codex Responses' default selection.
-This flag is experimental on the subscription transport: live checks on 2026-09-08 requested each variant but both responses reported `gpt-image-2-codex`.
-Do not claim a 2.5 upgrade from a successful request alone. A legacy response alias or C2PA version `2.0` also does not prove older weights: an image published in OpenAI's 2.5 announcement carries that same provenance version.
-The script warns when the reported model differs or is missing; inspect the sidecar's `image_model` separately from `requested_image_model`.
-`--orchestrator` selects the mainline model that calls the image tool, not Sunburst or Flare. Leave it out: the script uses the newest Sol-tier model (`gpt-<version>-sol`) that the account lists, so a retired model never breaks it. Requests go wherever Codex's own config sends Codex: a custom `model_provider` such as a proxy, an `openai_base_url` relay, or chatgpt.com.
+The backend picks size, quality and image model from the prompt. `--size`, `--quality` and `--image-model` are sent when given, but on ChatGPT they are currently ignored (verified 2026-11-06), and the script warns when the result differs. To get a shape, say it in the prompt: "square 1:1 …" or "tall vertical 9:16 …". Dense text and transparent subjects come back at `medium`; simple scenes often at `low`. Check `resolved_size` and `resolved_quality` in the sidecar before claiming either.
 
-Read [GPT Image 2.5 compatibility](references/gpt-image-2.5.md) for verified transport behavior and the official sources.
-Public API support for model selection, `xhigh`/`max`, and transparency does not establish the same behavior on Codex Responses.
+Leave `--image-model` out. On a proxy route the script sends the newest `gpt-image-*` model the proxy lists, which the proxy needs for routing. `--orchestrator` and `--effort` are deprecated no-ops: there is no chat model in this request. Details: [API recipe](references/api-recipe.md).
 
 ## Continuation handling
 
@@ -63,9 +57,9 @@ Saving discipline: output defaults to `./generated_images/`. If the image is des
 
 When the user wants a transparent background, add `--transparent`. That's it — no dispatch decision, no Pillow, no post-processing step for you to orchestrate.
 
-The script asks the model for alpha directly: it sends `background: "auto"` and appends one sentence to the prompt, and the backend returns RGBA. Do **not** pass `--background transparent`; that value is rejected by this backend (`docs/adr/0001-request-transparency-in-the-prompt.md` explains why, and why the obvious "fix" is wrong).
+The script asks the model for alpha directly: it sends `background: "transparent"` and appends one sentence to the prompt, and the backend returns RGBA. The sentence does most of the work: the parameter alone returns an alpha channel with almost no fully transparent pixels (`docs/adr/0002-use-the-images-api.md`). `--background transparent` is the same as `--transparent`.
 
-**If you test the backend yourself and see `"Transparent background is not supported for this model."`, do not conclude transparency is unavailable.** That 400 is the *parameter* being refused, not the capability. The model returns real alpha when asked in the prompt, which is what `--transparent` does. Advice that native transparency needs `gpt-image-1.5` or an `OPENAI_API_KEY` is pre-0.2.0 and wrong; if you are reading it, your installed skill is stale. Check `metadata.version` in this file — it should be `0.2.0` or later.
+Advice that native transparency needs `gpt-image-1.5` or an `OPENAI_API_KEY` is wrong for this skill. Check `metadata.version` in this file: it should be `0.3.0` or later.
 
 Two things to get right when you write the prompt:
 
@@ -79,7 +73,6 @@ After generating, view the file and check the alpha actually arrived. The script
 | Escalation | Action |
 | --- | --- |
 | Re-prompt | Strip scene/backdrop language, name the subject alone |
-| Raise quality | `--quality medium` for fine edges and small text |
 | Chroma | `--transparent-mode chroma` (needs Pillow) — you control the key plate |
 | Adobe MCP | `--transparent-mode chroma --bg-tool=none`, then call whatever Adobe background-removal tool this session exposes (look for an MCP tool whose name contains `remove_background`) and overwrite the file with the alpha result. Best option for translucency |
 
@@ -87,7 +80,7 @@ Chroma edge repair: thin fringe → `--edge-contract 1`; stair-stepped edges on 
 
 ## Quality, cost & time guardrails
 
-- The default is `--quality high`; `low`, `medium`, `high`, `xhigh`, `max`, and `auto` are accepted requests. Start with `low` for drafts. Codex Responses may override quality; inspect `resolved_quality` in the sidecar or `--verbose` output before claiming a level was delivered.
+- Quality is chosen by the backend; there is no reliable way to force a draft or a high-quality render. Inspect `resolved_quality` in the sidecar or `--verbose` output before claiming a level.
 - Generations count against the user's ChatGPT plan limits. Latency varies by model, prompt, quality, and service load.
 - Before generating more than 3 images for a single request, confirm with the user first.
 - Never loop indefinitely. "Many" / "a whole set" → pick a sensible default (4) and offer to continue.
@@ -114,8 +107,8 @@ bash "<skill-dir>/scripts/generate.sh" "a coffee mug with a soft drop shadow" --
 # Chroma fallback, when native disappoints (needs Pillow)
 bash "<skill-dir>/scripts/generate.sh" "a glass jar" --transparent --transparent-mode chroma
 
-# Different size / format / quality
-bash "<skill-dir>/scripts/generate.sh" "hero banner" --size 2048x1152 --format webp --quality low
+# A shape and a format: say the shape in the prompt; webp is converted locally (needs Pillow)
+bash "<skill-dir>/scripts/generate.sh" "wide 16:9 hero banner of a mountain lake at dawn" --format webp
 ```
 
 ## Token redaction (security)
@@ -133,8 +126,8 @@ For production logo/brand work, do invoke — but set expectations: generate exp
 
 When you need more depth, read from `<skill-dir>/references/`:
 
-- `api-recipe.md` — canonical request body, headers, rejected fields, transparency mechanism, SSE parsing
+- `api-recipe.md` — endpoints per route, request and response bodies, which fields the backend honors, transparency mechanism
 - `prompting-cookbook.md` — prompting fundamentals + use-case templates (logo, product shot, UI mockup, infographic)
 - `transparent-image-tips.md` — how native transparency works, when it struggles, and the chroma fallback
 
-Repo-level context: `CONTEXT.md` (glossary — the three transports are defined there) and `docs/adr/` (why transparency is requested in the prompt rather than the parameter).
+Repo-level context: `CONTEXT.md` (glossary, including the transports) and `docs/adr/` (why the skill uses the Images endpoints, and why transparency still needs the prompt sentence).

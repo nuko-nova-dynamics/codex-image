@@ -2,7 +2,7 @@
 
 `--transparent` asks the model for a real alpha channel. It does **not** run a background-removal step.
 
-Mechanism: the request sends `background: "auto"` and appends one sentence to your prompt. The backend reads the prompt, resolves `auto` to `transparent`, and returns RGBA. Never send `background: "transparent"` — it returns HTTP 400 on this transport. Full reasoning in [ADR-0001](../docs/adr/0001-request-transparency-in-the-prompt.md).
+Mechanism: the request sends `background: "transparent"` and appends one sentence to your prompt; the Images endpoint returns RGBA. The sentence is what clears the background: the parameter alone returned a nearly uniform alpha channel on 2026-11-06. Full reasoning in [ADR-0001](../docs/adr/0001-request-transparency-in-the-prompt.md) and [ADR-0002](../docs/adr/0002-use-the-images-api.md).
 
 No Pillow needed. The native path writes the bytes the model returned.
 

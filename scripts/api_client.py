@@ -1,108 +1,82 @@
-"""Build Codex Responses API requests for GPT Image generation."""
+"""Build and read Images API requests the way Codex's built-in image tool does.
+
+Since openai/codex #31596 (2026-07-09) Codex generates images with its
+`image_gen.imagegen` function tool, which calls `<base>/images/generations`
+and `<base>/images/edits` directly (codex-rs/codex-api/src/endpoint/images.rs).
+There is no chat model in the loop, so nothing like `reasoning` reaches the
+image model. The older transport (a Responses call that forced the hosted
+`image_generation` tool) is removed: ChatGPT began rejecting it in 2026-11 with
+"Complexity '<effort>' is not supported for this image model".
+
+Live checks on 2026-11-06 against chatgpt.com/backend-api/codex (Pro plan):
+the backend chooses size, quality and image model from the prompt. It accepts
+`size`, `quality`, `n`, `output_format`, `output_compression`, `moderation`,
+`model` and unknown fields without error but does not apply them, and always
+returns one PNG. `background: "transparent"` is honored and returns RGBA.
+`images` is required on edits. See references/api-recipe.md.
+"""
 from __future__ import annotations
 
-DEFAULT_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
-MODELS_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
+import re
 
-_VALID_EFFORTS = {"low", "medium", "high", "xhigh"}
-_REJECTED_BACKEND = {"n", "previous_response_id", "max_tool_calls", "max_output_tokens"}
+GENERATIONS_PATH = "images/generations"
+EDITS_PATH = "images/edits"
+
+
+class ParseError(Exception):
+    """The response held no image or was not the expected JSON shape."""
 
 
 def build_body(
     *,
     prompt: str,
-    size: str,
-    quality: str,
-    output_format: str,
-    background: str = "opaque",
+    background: str = "auto",
+    size: str | None = None,
+    quality: str | None = None,
     moderation: str | None = None,
-    quality_jpeg: int = 90,
+    model: str | None = None,
     input_images: list[str] | None = None,
-    orchestrator_model: str,
-    image_model: str | None = None,
-    reasoning_effort: str = "xhigh",
-    instructions: str | None = None,
 ) -> dict:
-    """Construct the Codex Responses request body per spec section 4.
+    """Request body for images/generations, or images/edits when input_images is set.
 
-    Args:
-        output_format: "png" | "jpeg" | "webp". WebP requests PNG on the wire
-            (we convert locally) since the backend ignores webp.
-        input_images: list of data URLs / URLs / file_ids. Up to 16
-            references (the skill cap). Triggers edit mode.
-        image_model: Optional image-tool model request. Codex Responses may
-            override it; only response metadata identifies the resolved model.
-        reasoning_effort: 'minimal'/'none' are rejected for image_gen; we silently
-            promote to 'low'.
+    Fields mirror Codex's ImageGenerationRequest / ImageEditRequest. `size`,
+    `quality` and `moderation` are sent only when the caller set them; the
+    ChatGPT backend currently ignores them, but a proxy or a future backend
+    may not. `model` is sent only when known: a proxy needs it to route the
+    request to its Images API path, while ChatGPT ignores it.
     """
-    if input_images and len(input_images) > 16:
-        raise ValueError(f"too many input references: got {len(input_images)}, max is 16")
-
-    if reasoning_effort not in _VALID_EFFORTS:
-        reasoning_effort = "low"
-
-    # Wire format. Omit local-only formats (webp); request png and convert locally.
-    wire_format = output_format if output_format in ("png", "jpeg") else "png"
-
-    tool: dict = {
-        "type": "image_generation",
-        "size": size,
-        "quality": quality,
-        "output_format": wire_format,
-        "background": background,
-    }
-    if image_model is not None:
-        tool["model"] = image_model
-    if wire_format == "jpeg":
-        tool["output_compression"] = quality_jpeg
-    if moderation:
-        tool["moderation"] = moderation
+    body: dict = {"prompt": prompt, "background": background}
+    if model:
+        body["model"] = model
+    if size:
+        body["size"] = size
+    if quality:
+        body["quality"] = quality
+    if moderation and moderation != "auto":
+        body["moderation"] = moderation
     if input_images:
-        tool["action"] = "edit"
-
-    # User content: image refs first, text last (spec section 8 edit body order).
-    user_content: list[dict] = []
-    for ref in input_images or []:
-        user_content.append({"type": "input_image", "image_url": ref})
-    user_content.append({"type": "input_text", "text": prompt})
-
-    body = {
-        "model": orchestrator_model,
-        "instructions": instructions or (
-            "Pass-through image generator. Call image_generation exactly once "
-            "with the user's prompt verbatim. No commentary."
-        ),
-        "input": [{"type": "message", "role": "user", "content": user_content}],
-        "tools": [tool],
-        "tool_choice": {
-            "type": "allowed_tools",
-            "mode": "required",
-            "tools": [{"type": "image_generation"}],
-        },
-        "reasoning": {"effort": reasoning_effort},
-        "parallel_tool_calls": False,
-        "store": False,
-        "stream": True,
-    }
+        body["images"] = [{"image_url": url} for url in input_images]
     return body
+
+
+def endpoint_path(body: dict) -> str:
+    return EDITS_PATH if body.get("images") else GENERATIONS_PATH
 
 
 def build_headers(
     *, access_token: str, account_id: str, codex_cli_version: str,
 ) -> dict[str, str]:
-    """Headers per spec section 4. OpenAI-Beta is intentionally absent (WebSocket-only).
+    """Headers for the ChatGPT route, as the Codex CLI sends them.
 
-    `codex_cli_version` MUST be the user's installed Codex CLI version (or
-    a current one), not our skill version. The Codex backend gates feature
-    access by this header — older versions get HTTP 400
-    'requires a newer version of Codex'. The caller is responsible for
-    detecting the right value at runtime (see generate.py main()).
+    `codex_cli_version` MUST be the user's installed Codex CLI version. The
+    backend gates features by this header and answers older versions with
+    HTTP 400 'requires a newer version of Codex'.
     """
     return {
         "Authorization": f"Bearer {access_token}",
         "ChatGPT-Account-ID": account_id,
         "Content-Type": "application/json",
-        "Accept": "text/event-stream",
+        "Accept": "application/json",
         "originator": "codex_cli_rs",
         "User-Agent": f"codex_cli_rs/{codex_cli_version}",
         "version": codex_cli_version,
@@ -117,35 +91,46 @@ def model_ids(catalog: dict) -> list[dict]:
             if isinstance(m, dict) and (m.get("slug") or m.get("id"))]
 
 
-def newest_sol_model(models: list[dict]) -> str | None:
-    """The highest-versioned Sol-tier model (`gpt-<version>-sol`) the account lists.
+_IMAGE_MODEL = re.compile(r"gpt-image-(\d+(?:\.\d+)*)(-[a-z0-9-]+)?")
 
-    Sol is the tier the image tool needs; Astra is the top tier and Luna the
-    small one. Aliases such as `gpt-sol-latest` carry no version and are
-    skipped, as are models Codex keeps out of its picker (`hide`, `none`).
+
+def newest_image_model(models: list[dict]) -> str | None:
+    """The highest-versioned `gpt-image-*` model a route lists.
+
+    At equal versions the plain name (`gpt-image-2.6`) wins over a variant
+    (`gpt-image-2.6-flare`). Returns None when the list has no image model,
+    which is normal for the ChatGPT catalog: it lists chat models only.
     """
-    import re
-    best: tuple[tuple[int, ...], str] | None = None
+    best: tuple[tuple[int, ...], int, str] | None = None
     for m in models:
-        if m.get("visibility", "list") != "list":  # Codex shows only "list" in its picker
-            continue
-        if match := re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-sol", m.get("slug") or ""):
+        slug = m.get("slug") or ""
+        if match := _IMAGE_MODEL.fullmatch(slug):
             version = tuple(int(part) for part in match.group(1).split("."))
-            if best is None or version > best[0]:
-                best = (version, m["slug"])
-    return best[1] if best else None
+            key = (version, 0 if match.group(2) else 1, slug)
+            if best is None or key[:2] > best[:2]:
+                best = key
+    return best[2] if best else None
 
 
-def codex_default_model(models: list[dict]) -> str | None:
-    """Pick the model Codex itself treats as the default for this account.
-
-    Mirrors Codex's own rule (`mark_default_by_picker_visibility` in
-    openai/codex): sort the account's catalog by `priority`, take the first
-    model shown in the picker, else the first model at all.
-    """
-    ranked = sorted((m for m in models if m.get("slug")),
-                    key=lambda m: m.get("priority", float("inf")))
-    for model in ranked:
-        if model.get("visibility") == "list":
-            return model["slug"]
-    return ranked[0]["slug"] if ranked else None
+def extract_image(resp: dict) -> tuple[str, dict]:
+    """Return (b64, metadata) from an Images API JSON response."""
+    if not isinstance(resp, dict):
+        raise ParseError("response was not a JSON object")
+    data = resp.get("data")
+    if not isinstance(data, list) or not data:
+        raise ParseError("no image in response (empty data)")
+    first = data[0] if isinstance(data[0], dict) else {}
+    b64 = first.get("b64_json")
+    if not b64:
+        raise ParseError("no image in response (data[0] has no b64_json)")
+    meta = {
+        "generation_id": first.get("generation_id"),
+        "revised_prompt": first.get("revised_prompt"),
+        "resolved_size": resp.get("size"),
+        "resolved_quality": resp.get("quality"),
+        "resolved_background": resp.get("background"),
+        "output_format": resp.get("output_format"),
+        "usage": resp.get("usage"),
+        "image_count": len(data),
+    }
+    return b64, meta

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.conftest import images_response
+
 
 def _setup_auth(fixture_dir: Path, monkeypatch, tmp_path: Path):
     home = tmp_path / "fake-codex-home"
@@ -25,16 +27,18 @@ def test_from_last_uses_last_pointer(tmp_path, fixture_dir, monkeypatch):
     captured = {}
     def fake_post(*, body, headers, endpoint=None, timeout=None):
         captured["body"] = body
-        return _fake_sse_image()
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+        captured["endpoint"] = endpoint
+        return images_response()
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     result = generate.main([
         "now make it green", "--from-last",
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ])
     assert result == 0
-    user_content = captured["body"]["input"][0]["content"]
-    assert any(p["type"] == "input_image" for p in user_content)
+    assert captured["endpoint"].endswith("/images/edits")
+    assert len(captured["body"]["images"]) == 1
+    assert captured["body"]["images"][0]["image_url"].startswith("data:image/png;base64,")
 
 
 def test_from_last_errors_when_no_pointer(tmp_path, fixture_dir, monkeypatch, capsys):
@@ -76,16 +80,16 @@ def test_from_last_combines_with_input(tmp_path, fixture_dir, monkeypatch):
     captured = {}
     def fake_post(*, body, headers, endpoint=None, timeout=None):
         captured["body"] = body
-        return _fake_sse_image()
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+        captured["endpoint"] = endpoint
+        return images_response()
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     result = generate.main([
         "merge them", "--from-last", "--input", str(extra),
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ])
     assert result == 0
-    images = [c for c in captured["body"]["input"][0]["content"] if c["type"] == "input_image"]
-    assert len(images) == 2
+    assert len(captured["body"]["images"]) == 2
 
 
 def test_combined_refs_exceeding_16_errors(tmp_path, fixture_dir, monkeypatch, capsys):
@@ -131,27 +135,14 @@ def test_combined_16_refs_pass_local_validation(tmp_path, fixture_dir, monkeypat
 
     def fake_post(*, body, headers, endpoint=None, timeout=None):
         captured["body"] = body
-        return _fake_sse_image()
+        captured["endpoint"] = endpoint
+        return images_response()
 
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     result = generate.main([
         "x", "--from-last", *extras,
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ])
     assert result == 0
-    images = [
-        item
-        for item in captured["body"]["input"][0]["content"]
-        if item["type"] == "input_image"
-    ]
-    assert len(images) == 16
-
-
-def _fake_sse_image() -> str:
-    import base64
-    b = base64.b64encode(b"\x89PNG\r\n\x1a\nFAKE").decode()
-    return (
-        "event: response.output_item.done\n"
-        f'data: {{"type":"response.output_item.done","item":{{"id":"i","type":"image_generation_call","status":"completed","result":"{b}"}}}}\n\n'
-    )
+    assert len(captured["body"]["images"]) == 16

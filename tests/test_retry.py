@@ -103,14 +103,14 @@ def test_post_with_error_handling_catches_network_errors(
     def boom(**kwargs):
         raise error
 
-    monkeypatch.setattr(generate, "post_responses", boom)
+    monkeypatch.setattr(generate, "post_images", boom)
     monkeypatch.setattr(generate.retry_mod, "call_with_retries", lambda fn: fn())
 
     import codex_route
     route = codex_route.Route(kind="chatgpt", name="openai", base_url="https://example.invalid")
-    sse, exit_code = generate._post_with_error_handling(body={}, headers={}, route=route)
+    resp, exit_code = generate._post_with_error_handling(body={}, headers={}, route=route)
     err = capsys.readouterr().err
-    assert sse is None
+    assert resp is None
     assert exit_code == 1
     assert err.startswith("✗")
     assert expected in err.lower()
