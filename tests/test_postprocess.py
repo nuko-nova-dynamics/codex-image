@@ -38,11 +38,22 @@ def test_save_image_png_passthrough(tmp_path):
     assert target.read_bytes() == raw
 
 
-def test_save_image_jpeg_passthrough(tmp_path):
+def test_save_image_jpeg_passthrough_for_jpeg_bytes(tmp_path):
     raw = b"\xff\xd8\xff\xe0FAKE"
     target = tmp_path / "x.jpg"
     save_image(raw_bytes=raw, target_path=target, format="jpeg")
     assert target.read_bytes() == raw
+
+
+def test_save_image_jpeg_converts_returned_png(tmp_path):
+    """The Images API always returns PNG; --format jpeg converts it locally."""
+    src = tmp_path / "stage.png"
+    Image.new("RGBA", (8, 8), (255, 0, 0, 128)).save(src, "PNG")
+    target = tmp_path / "x.jpg"
+    save_image(raw_bytes=src.read_bytes(), target_path=target, format="jpeg", jpeg_quality=70)
+    img = Image.open(target)
+    assert img.format == "JPEG"
+    assert img.mode == "RGB"
 
 
 def test_save_image_webp_converts_via_pillow(tmp_path):
@@ -54,7 +65,7 @@ def test_save_image_webp_converts_via_pillow(tmp_path):
 
 
 def test_transparent_plus_jpeg_rejected_BEFORE_paid_call(tmp_path, fixture_dir, monkeypatch, capsys):
-    """Codex review: rejection must happen before post_responses to save credits."""
+    """Codex review: rejection must happen before post_images to save credits."""
     import generate
 
     fake_home = tmp_path / "fake-codex-home"
@@ -66,8 +77,8 @@ def test_transparent_plus_jpeg_rejected_BEFORE_paid_call(tmp_path, fixture_dir, 
     called = {"post": False}
     def boom(**kw):
         called["post"] = True
-        raise AssertionError("post_responses must NOT be called when --transparent + --format jpeg")
-    monkeypatch.setattr(generate, "post_responses", boom)
+        raise AssertionError("post_images must NOT be called when --transparent + --format jpeg")
+    monkeypatch.setattr(generate, "post_images", boom)
 
     rc = generate.main([
         "x", "--transparent", "--format", "jpeg",
@@ -79,7 +90,8 @@ def test_transparent_plus_jpeg_rejected_BEFORE_paid_call(tmp_path, fixture_dir, 
     assert "jpeg" in err.lower() and "alpha" in err.lower()
 
 
-def test_transparent_plus_webp_runs_chroma_before_conversion(tmp_path, fixture_dir, monkeypatch):
+def test_transparent_plus_webp_runs_chroma_before_conversion(tmp_path, fixture_dir, monkeypatch,
+                                                            fake_images_response):
     """Chroma mode + --format webp must stage PNG → chroma → convert to WebP."""
     import subprocess
 
@@ -94,11 +106,7 @@ def test_transparent_plus_webp_runs_chroma_before_conversion(tmp_path, fixture_d
 
     monkeypatch.setattr(transparency, "pillow_available", lambda: True)
 
-    import base64
-    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
-    monkeypatch.setattr(generate, "post_responses", lambda **kw:
-        f'event: response.output_item.done\ndata: {{"type":"response.output_item.done","item":{{"id":"i","type":"image_generation_call","status":"completed","result":"{fake_b64}"}}}}\n\n'
-    )
+    monkeypatch.setattr(generate, "post_images", lambda **kw: fake_images_response())
 
     seen = {"chroma_input_ext": None, "chroma_output_ext": None}
 
@@ -135,7 +143,8 @@ def test_transparent_plus_webp_runs_chroma_before_conversion(tmp_path, fixture_d
     assert not list(out_dir.glob("*.stage.png"))
 
 
-def test_plain_webp_does_not_apply_chroma_key(tmp_path, fixture_dir, monkeypatch, capsys):
+def test_plain_webp_does_not_apply_chroma_key(tmp_path, fixture_dir, monkeypatch, capsys,
+                                              fake_images_response):
     """`--format webp` alone (no --transparent) must NOT mutate the prompt
     or print the chroma-key warning. Regression for v0.1.0 smoke run."""
     import generate
@@ -159,11 +168,9 @@ def test_plain_webp_does_not_apply_chroma_key(tmp_path, fixture_dir, monkeypatch
 
     def capture_body(**kwargs):
         sent["body"] = kwargs.get("body", {})
-        return ('event: response.output_item.done\n'
-                'data: {"type":"response.output_item.done","item":'
-                f'{{"id":"i","type":"image_generation_call","status":"completed","result":"{real_png_b64}"}}}}\n\n')
+        return fake_images_response(real_png_b64)
 
-    monkeypatch.setattr(generate, "post_responses", capture_body)
+    monkeypatch.setattr(generate, "post_images", capture_body)
 
     rc = generate.main([
         "a tiny blue square", "--format", "webp",
@@ -178,16 +185,6 @@ def test_plain_webp_does_not_apply_chroma_key(tmp_path, fixture_dir, monkeypatch
 
     # The user prompt must reach the API verbatim (no chroma-key suffix).
     body = sent["body"]
-    user_msgs = [m for m in body.get("input", []) if m.get("role") == "user"]
-    assert user_msgs, f"no user message in body: {body}"
-    text_parts = []
-    for m in user_msgs:
-        for c in m.get("content", []):
-            if c.get("type") in ("input_text", "text"):
-                text_parts.append(c.get("text", ""))
-    full_prompt = " ".join(text_parts)
-    assert full_prompt.strip().startswith("a tiny blue square"), full_prompt
-    # Chroma template phrasing must be absent.
-    assert "chroma-key" not in full_prompt.lower(), (
-        f"chroma-key suffix leaked into plain webp prompt: {full_prompt!r}"
-    )
+    assert body["prompt"] == "a tiny blue square"
+    assert body["background"] == "opaque"
+    assert list(tmp_path.joinpath("out").glob("*.webp"))

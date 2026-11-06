@@ -45,10 +45,6 @@ class Route:
         return f"{self.base_url}/{path}" + (f"?{urlencode(params)}" if params else "")
 
     @property
-    def responses_url(self) -> str:
-        return self.url("responses")
-
-    @property
     def models_url(self) -> str:
         return self.url("models")
 
@@ -114,7 +110,7 @@ def resolve_route(config: dict) -> Route:
 
 
 def provider_headers(route: Route) -> dict[str, str]:
-    headers = {"Content-Type": "application/json", "Accept": "text/event-stream", **route.headers}
+    headers = {"Content-Type": "application/json", "Accept": "application/json", **route.headers}
     if route.bearer_token:
         headers["Authorization"] = f"Bearer {route.bearer_token}"
     return headers

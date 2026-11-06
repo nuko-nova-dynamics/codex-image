@@ -1,119 +1,97 @@
-# API recipe — canonical Codex Responses request
+# API recipe: the Images API on the Codex route
 
-## Endpoint
+Since 0.3.0 the skill calls the same endpoints Codex's built-in image tool calls. openai/codex [#31596](https://github.com/openai/codex/pull/31596) (2026-07-09) made the `image_gen.imagegen` function tool the default. It posts to `<base>/images/generations` and `<base>/images/edits` (`codex-rs/codex-api/src/endpoint/images.rs`). No chat model is involved.
 
-`POST https://chatgpt.com/backend-api/codex/responses`
+`<base>` is wherever Codex's config sends Codex:
 
-## Headers (required)
+| Route | Base | Generation URL |
+| --- | --- | --- |
+| ChatGPT sign-in | `https://chatgpt.com/backend-api/codex` | `…/backend-api/codex/images/generations` |
+| `openai_base_url` relay | the relay URL, for example `http://127.0.0.1:8318/backend-api/codex` | `…/images/generations` |
+| Custom `model_provider` (a proxy) | the provider's `base_url`, for example `http://host:8317/v1` | `…/v1/images/generations` |
 
-| Header | Value |
-| --- | --- |
-| `Authorization` | `Bearer <tokens.access_token>` |
-| `ChatGPT-Account-ID` | `<tokens.account_id>` (PascalCase exact) |
-| `Content-Type` | `application/json` |
-| `Accept` | `text/event-stream` |
-| `originator` | `codex_cli_rs` |
-| `User-Agent` | `codex_cli_rs/<codex_cli_version>` |
-| `version` | `<codex_cli_version>` |
+## Headers (ChatGPT route)
 
-`OpenAI-Beta` is NEVER sent — that header is WebSocket-only.
+```text
+Authorization: Bearer <tokens.access_token from ~/.codex/auth.json>
+ChatGPT-Account-ID: <tokens.account_id>
+Content-Type: application/json
+Accept: application/json
+originator: codex_cli_rs
+User-Agent: codex_cli_rs/<installed codex --version>
+version: <installed codex --version>
+```
 
-The `version` and `User-Agent` carry the user's installed Codex CLI version (detected at runtime via `codex --version`), not the skill's own version. The Codex backend gates feature/model access by this — older versions get HTTP 400 "requires a newer version of Codex".
+A provider route sends `Authorization: Bearer <provider key>` plus the provider's configured headers.
 
-## Body shape (single generation)
-
-The request `model` is the *orchestrator*, which invokes the `image_generation` tool. The skill pins no orchestrator: by default it uses the newest Sol-tier model (`gpt-<version>-sol`, highest version, hidden models skipped) from the route's model list, `GET <base>/models` (with `?client_version=<codex version>` on the ChatGPT route, falling back to Codex's `~/.codex/models_cache.json`). With no Sol model listed, it uses Codex's configured `model`, then the catalog's top-ranked model. `--orchestrator` or `CODEX_IMAGE_ORCHESTRATOR` overrides it. `<base>` is the route from Codex's config: a custom provider's `base_url`, else `openai_base_url`, else `https://chatgpt.com/backend-api/codex`. By default the endpoint selects the image model. `--image-model` adds `model` inside that tool as an experimental request; the top-level model stays the orchestrator. See [GPT Image 2.5 compatibility](gpt-image-2.5.md) for live override evidence.
+## Generation body
 
 ```json
 {
-  "model": "<orchestrator>",
-  "instructions": "Pass-through image generator. ...",
-  "input": [{
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": "<USER_PROMPT>"}]
-  }],
-  "tools": [{
-    "type": "image_generation",
-    "size": "<size>",
-    "quality": "<quality>",
-    "output_format": "<png|jpeg>",
-    "background": "<opaque|auto>"
-  }],
-  "tool_choice": {
-    "type": "allowed_tools",
-    "mode": "required",
-    "tools": [{"type": "image_generation"}]
-  },
-  "reasoning": {"effort": "xhigh"},
-  "parallel_tool_calls": false,
-  "store": false,
-  "stream": true
+  "prompt": "<prompt>",
+  "background": "opaque"
 }
 ```
 
-## Body shape (edit mode)
-
-`input[0].content` includes one or more `input_image` parts BEFORE the text:
+## Edit body
 
 ```json
-{"type": "input_image", "image_url": "data:image/png;base64,..."}
+{
+  "prompt": "<prompt>",
+  "background": "opaque",
+  "images": [{"image_url": "data:image/png;base64,..."}]
+}
 ```
 
-The tool gets `"action": "edit"`. Up to 16 references (the documented gpt-image-2 edit limit, confirmed against this backend with a live 6-reference run on 2026-07-21); the combined cap covers `--input` + `--from-last`.
+Codex also sends `{"file_id": "..."}` references; the skill sends data URLs. `images` is required on `images/edits` (`400 missing_required_parameter` without it).
 
-## Rejected fields — never send
+## Response
 
-| Field | Backend response |
+```json
+{
+  "created": 1793987994,
+  "data": [{"b64_json": "<PNG>", "generation_id": "…"}],
+  "background": "opaque",
+  "quality": "low",
+  "size": "1536x1024",
+  "output_format": "png",
+  "usage": {"input_tokens": 17, "output_tokens": 343, "total_tokens": 360}
+}
+```
+
+The response header `x-codex-imagegen-request-id` carries a request ID. The response does not name the image model.
+
+## What the ChatGPT backend honors
+
+Probed on 2026-11-06 against `chatgpt.com/backend-api/codex` with a Pro plan, a simple prompt, and one call per row.
+
+| Field sent | Result |
 | --- | --- |
-| `n` | "Unknown parameter" |
-| `previous_response_id` | "Unsupported parameter" |
-| `item_reference` | 404 unless `store: true` (and `store: true` itself is untested) |
-| `max_tool_calls`, `max_output_tokens` | "Unsupported parameter" |
-| `reasoning.effort: "minimal"` / `"none"` | rejected for the `image_gen` tool |
-| `output_format: "webp"` | silently ignored — backend returns PNG bytes mislabeled. The user-facing `--format webp` flag therefore requests PNG on the wire and converts locally via Pillow (`postprocess.py`) |
-| `background: "transparent"` | HTTP 400, `"Transparent background is not supported for this model."` — see **Transparency** below. This does **not** mean transparency is unavailable |
+| `prompt` | Required. Also drives size and quality. |
+| `background: "transparent"` | Honored: RGBA output, `background: "transparent"` in the response. See transparency below. |
+| `size` (`1024x1024`, `1024x1536`, `2048x1152`, `auto`) | Ignored: every result was `1536x1024`. |
+| `quality` (`low`, `medium`, `high`, `auto`, omitted) | Ignored: the backend picked `low` for the cube prompt, `medium` for transparent and dense-text prompts. |
+| `model` (`gpt-image-2`, `-2.5`, `-2.6`, `-2.6-flare`, `-1.5`, an unknown name, omitted) | Ignored and never echoed. Not required. |
+| `n: 2` | Ignored: one image. |
+| `output_format: "jpeg"`/`"webp"`, `output_compression` | Ignored: PNG every time. The skill converts locally. |
+| `moderation: "low"` | Accepted; effect not observable. |
+| `stream: true`, `partial_images: 1` | Streams `keepalive` then one `image_generation.completed` event; no partial frames. |
+| `output_format: "gif"` | `400 GIF output is not enabled for this request.` |
+| An unknown field | Accepted silently. |
+| `images` with 6, 16 or 17 references | All accepted. The skill keeps its cap of 16. |
+
+The prompt sets the size: "Square 1:1 image: …" returned `1254x1254`, "Tall vertical 9:16 phone wallpaper: …" returned `941x1672`, and a dense infographic returned `1247x1261` at `medium`. Ask for an aspect ratio in the prompt.
+
+The skill still sends `size`, `quality` and `moderation` when the user passes them, because a proxy or a later backend may apply them, and it warns when the response differs. It sends `model` only on a proxy route, where the proxy needs a `gpt-image-*` name to route the request to its Images API path. It picks the newest one the proxy lists under `/models`, or `--image-model`.
 
 ## Transparency
 
-Native alpha works on this transport. It is requested through the **prompt**, not the parameter.
+Send `background: "transparent"` and append one sentence to the prompt:
 
-Send `background: "auto"` and append a transparency request to the prompt text. The backend resolves `auto` to `transparent` and returns RGBA. Confirm it worked by reading `background` back off the `image_generation_call` item: it comes back as `"transparent"` even though `"auto"` was sent.
+> Output the isolated subject on a genuinely transparent background with actual alpha.
 
-Never send `background: "transparent"`. Full reasoning, evidence, and the free re-test recipe are in [ADR-0001](../docs/adr/0001-request-transparency-in-the-prompt.md).
+Both halves matter. On 2026-11-06, "a ceramic coffee mug" with the parameter alone returned alpha between 12 and 252 everywhere: no fully transparent pixel. With the sentence, about half the pixels were fully transparent and the subject was opaque (alpha 250 or more), with or without the parameter. See `docs/adr/0002-use-the-images-api.md`.
 
-### Historical transparency behavior (2026-08-21)
+## Removed transport
 
-The backend pins its own image model and echoes it at `response.tools[0].model`:
-
-```json
-{"type": "image_generation", "background": "auto", "model": "gpt-image-2-codex",
- "moderation": "auto", "n": 1, "output_compression": 100,
- "output_format": "png", "quality": "auto", "size": "auto"}
-```
-
-OpenAI's 2026-08-20 changelog granted transparent-background support to `gpt-image-2` and `gpt-image-2-2026-04-21`. `gpt-image-2-codex` is not on that list. The public Responses API accepts the parameter; this transport does not, because it routes to a variant that was not in the rollout.
-
-The wire schema already accepts the value — a nonsense background returns `"Supported values are: 'transparent', 'opaque', and 'auto'."` from an earlier validation layer — so only the model-capability gate is closed.
-
-### Re-testing
-
-A validation rejection produces no image, but a previously rejected request may now succeed and consume a generation. Verified closed on 2026-08-21 with codex-cli 0.149.0.
-
-### Resolved parameters are advisory
-
-`size` and `quality` are requests, not instructions. Two runs asking for `1024x1024` / `low` returned `1536x1024` / `medium` and `1312x1199` / `medium`. Read `resolved_size` and `resolved_quality` off the response rather than assuming.
-
-## SSE result extraction — priority order
-
-The image (`base64 PNG`) can arrive via three paths. Consume the FULL stream, then:
-
-1. **Preferred:** `response.output_item.done` event with `item.type == "image_generation_call"` carrying a `result` → use it. **Do not require `item.status == "completed"`.** This backend emits the finished image while still reporting `status: "generating"`.
-2. **Equivalent fallback:** post-stream sweep `response.completed.response.output[*]` for any `image_generation_call` item. **This array is frequently empty** on completed streams, so it cannot be relied on.
-3. **Last-resort fallback:** the latest `response.image_generation_call.partial_image` payload, **only** if neither path above produced bytes.
-
-Never short-circuit on the first match — partial frames arrive first by design.
-
-Gating step 1 on `status == "completed"` was a real bug (fixed 2026-08-21): with an empty `response.completed.output`, every successful generation silently demoted to the partial frame. Both observed cases happened to be byte-identical, but a stale partial would have saved the wrong image. `tests/fixtures/sse_generating_status.txt` reproduces the shape.
-
-`response.failed`, HTTP non-2xx, or stream close with no candidate → surface as error.
+Before 0.3.0 the skill posted to `<base>/responses` with a chat model ("orchestrator") forced to call the hosted `image_generation` tool. In 2026-11 ChatGPT began passing the request's `reasoning.effort` to the image model as `complexity`, and every value failed with `Complexity '<effort>' is not supported for this image model`. CLIProxyAPI v8.0.58 then rejected those requests outright (router-for-me/CLIProxyAPI#7309). Codex itself had already moved off that path in July.

@@ -75,7 +75,7 @@ def test_http_error_body_redacted_before_print(tmp_path, fixture_dir, monkeypatc
         e = urllib.error.HTTPError("u", 400, "Bad Request", {}, None)
         e.body_text = leaky_body  # type: ignore[attr-defined]
         raise e
-    monkeypatch.setattr(generate, "post_responses", boom)
+    monkeypatch.setattr(generate, "post_images", boom)
 
     rc = generate.main(["x", "--out-dir", str(tmp_path / "out"), "--quality", "low"])
     err = capsys.readouterr().err

@@ -34,13 +34,46 @@ def fixture_dir() -> Path:
     return FIXTURE_DIR
 
 
+# What a proxy's /models lists: chat models plus the gpt-image models it can
+# route to its Images API path. The ChatGPT route never fetches a model list.
+PROVIDER_MODELS = [
+    {"slug": "gpt-6.1-sol"},
+    {"slug": "gpt-image-2"},
+    {"slug": "gpt-image-2.6-flare"},
+    {"slug": "gpt-image-2.6"},
+]
+
+
 @pytest.fixture(autouse=True)
 def _offline_model_catalog(monkeypatch):
-    """Tests never reach the live Codex model catalog; individual tests override this."""
+    """Tests never reach a live model list; individual tests override this."""
     import generate
-    monkeypatch.setattr(generate, "fetch_models", lambda **kw: [
-        {"slug": "gpt-catalog-default", "priority": 1, "visibility": "list"},
-    ])
-    monkeypatch.delenv("CODEX_IMAGE_ORCHESTRATOR", raising=False)
+    monkeypatch.setattr(generate, "fetch_models", lambda **kw: list(PROVIDER_MODELS))
+    for var in ("CODEX_IMAGE_ORCHESTRATOR", "CODEX_IMAGE_MODEL", "CODEX_IMAGE_SIZE",
+                "CODEX_IMAGE_QUALITY", "CODEX_IMAGE_FORMAT", "CODEX_IMAGE_OUT_DIR"):
+        monkeypatch.delenv(var, raising=False)
     import codex_route
     monkeypatch.setattr(codex_route, "SYSTEM_CONFIG", FIXTURE_DIR / "no-such-system-config.toml")
+
+
+def images_response(b64: str | None = None, **overrides) -> dict:
+    """An Images API JSON response as the ChatGPT backend returns it."""
+    if b64 is None:
+        b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nFAKEPNGBYTES").decode()
+    resp = {
+        "created": 1,
+        "data": [{"b64_json": b64, "generation_id": "g1"}],
+        "size": "1536x1024",
+        "quality": "low",
+        "background": "opaque",
+        "output_format": "png",
+        "usage": {"input_tokens": 17, "output_tokens": 343, "total_tokens": 360},
+    }
+    resp.update(overrides)
+    return resp
+
+
+@pytest.fixture
+def fake_images_response():
+    """Factory: fake_images_response(b64=None, **top_level_overrides) -> dict."""
+    return images_response

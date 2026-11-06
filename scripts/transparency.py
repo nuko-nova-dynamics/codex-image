@@ -2,9 +2,11 @@
 
 Two paths:
 
-- **native** (default): ask the model for alpha. `background="auto"` plus one
-  sentence appended to the prompt; the backend resolves `auto` to
-  `transparent` and returns RGBA. See docs/adr/0001.
+- **native** (default): ask the model for alpha. `background="transparent"`
+  plus one sentence appended to the prompt; the Images API returns RGBA. The
+  sentence does the work: without it the alpha channel comes back nearly
+  uniform (231-251 on 2026-11-06), with it about half the pixels are fully
+  transparent. See docs/adr/0002.
 - **chroma** (fallback): generate on a flat key plate, strip the key locally.
   Needed for subject classes native transparency is not yet proven on.
 
@@ -16,8 +18,9 @@ from __future__ import annotations
 import re
 
 # Appended verbatim to the user's prompt on the native path. This is the
-# mechanism, not decoration: the backend resolves background="auto" to
-# "transparent" by reading the prompt.
+# mechanism, not decoration: background="transparent" alone returns an alpha
+# channel with almost no fully transparent pixels (re-verified 2026-11-06 on
+# the Images API).
 #
 # Deliberately contains NO creative constraints. Earlier drafts banned cast
 # shadows, plinths, rectangles and text; those are the user's decisions, not

@@ -16,8 +16,8 @@ def test_whoami_prints_account_and_exits_without_generating(tmp_path, fixture_di
     called = {"post": False}
     def post(**kw):
         called["post"] = True
-        return ""
-    monkeypatch.setattr(generate, "post_responses", post)
+        return {}
+    monkeypatch.setattr(generate, "post_images", post)
 
     result = generate.main(["x", "--whoami"])
     out = capsys.readouterr().out
@@ -27,15 +27,12 @@ def test_whoami_prints_account_and_exits_without_generating(tmp_path, fixture_di
     assert "pro" in out
 
 
-def test_first_use_banner_appears_once_per_session(tmp_path, fixture_dir, monkeypatch, capsys):
+def test_first_use_banner_appears_once_per_session(tmp_path, fixture_dir, monkeypatch, capsys,
+                                                     fake_images_response):
     import generate
     _setup_auth(fixture_dir, monkeypatch, tmp_path)
 
-    import base64
-    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nf").decode()
-    monkeypatch.setattr(generate, "post_responses", lambda **kw:
-        f'event: response.output_item.done\ndata: {{"type":"response.output_item.done","item":{{"id":"i","type":"image_generation_call","status":"completed","result":"{fake_b64}"}}}}\n\n'
-    )
+    monkeypatch.setattr(generate, "post_images", lambda **kw: fake_images_response())
 
     # First call: banner shown
     generate.main(["a", "--quality", "low", "--out-dir", str(tmp_path / "out")])

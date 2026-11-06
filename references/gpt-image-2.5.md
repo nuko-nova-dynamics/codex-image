@@ -1,5 +1,7 @@
 # GPT Image 2.5 compatibility
 
+> **Historical (2026-11-06).** These checks used the Codex Responses transport, removed in 0.3.0. On the Images endpoints the ChatGPT backend ignores `model` and does not report the image model; see [api-recipe.md](api-recipe.md).
+
 Checked 2026-09-08. This skill uses Codex Responses with subscription OAuth, not an API key.
 
 ## Model requests

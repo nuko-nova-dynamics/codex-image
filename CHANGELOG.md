@@ -5,19 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-06
+
+### Changed
+
+- Generation and edits now post to `<base>/images/generations` and `<base>/images/edits`, as Codex's built-in image tool has done since openai/codex #31596 (2026-07-09). The Codex Responses transport is removed: ChatGPT began failing it with `Complexity '<effort>' is not supported for this image model`, and CLIProxyAPI v8.0.58 rejects it (router-for-me/CLIProxyAPI#7309). See ADR-0002.
+- Native transparency sends `background: "transparent"` plus the existing prompt sentence. `--background transparent` is now the same as `--transparent` instead of a passthrough of a rejected value.
+- `--size` and `--quality` default to unset and are sent only when given. The ChatGPT backend picks both from the prompt; the script warns when the result differs. `xhigh` and `max` are sent as `high`.
+- `--image-model` accepts any name and is sent only when given or on a proxy route, where the newest `gpt-image-*` model the proxy lists is used.
+- `--format jpeg` is converted locally like `webp`, because the backend always returns PNG; both need Pillow and are checked before the paid call.
+- Sidecars record `resolved_size`, and `response_id` now holds the per-image generation ID. `image_model` is null because the endpoint does not report it.
+- `--quality high` no longer prints an advisory that the OAuth route caps quality to medium. That cap was not verified across models and plans; the sidecar now records the quality the response reports as `resolved_quality`.
+- The `SKILL.md` description now lists only when to use the skill: generating or editing any image, follow-up edits, and transparent cutouts. What the skill does and how it bills moved out of the description, which stays loaded in every session.
+- CI markdownlint now covers `AGENTS.md`, `CONTEXT.md`, and `docs/**/*.md` — 17 files instead of 14. The files added in 0.2.0 were only ever linted by hand.
+
+### Removed
+
+- The orchestrator: `--orchestrator` and `--effort` are hidden no-ops that print a warning, and `CODEX_IMAGE_ORCHESTRATOR` is ignored.
+- `scripts/sse_parser.py` and the SSE fixtures.
 
 ### Added
 
 - Requests follow Codex's own routing: the script reads `$CODEX_HOME/config.toml` over `/etc/codex/config.toml` and sends the model list request and the generation to a custom `model_provider`'s `base_url` with its key (no ChatGPT sign-in needed, so a proxy works), else to `openai_base_url`, else to chatgpt.com. `--whoami` reports the provider route.
 - Experimental GPT Image 2.5 Sunburst/Flare requests via `--image-model`, plus `xhigh` and `max` quality requests. Codex Responses may override these values; existing default selection is preserved.
 - Requested image model and resolved quality in sidecars, model mismatch warnings, and GPT Image 2.5 compatibility guidance backed by live subscription-endpoint probes.
-
-### Changed
-
-- `--quality high` no longer prints an advisory that the OAuth route caps quality to medium. That cap was not verified across models and plans; the sidecar now records the quality the response reports as `resolved_quality`.
-- The `SKILL.md` description now lists only when to use the skill: generating or editing any image, follow-up edits, and transparent cutouts. What the skill does and how it bills moved out of the description, which stays loaded in every session.
-- CI markdownlint now covers `AGENTS.md`, `CONTEXT.md`, and `docs/**/*.md` — 17 files instead of 14. The files added in 0.2.0 were only ever linted by hand.
 
 ### Fixed
 
@@ -156,6 +167,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (regression caught by smoke run; covered by
   `test_plain_webp_does_not_apply_chroma_key`).
 
-[Unreleased]: https://github.com/nuko-nova-dynamics/codex-image/compare/v0.1.5...HEAD
+[0.3.0]: https://github.com/nuko-nova-dynamics/codex-image/compare/v0.1.5...v0.3.0
 [0.1.5]: https://github.com/nuko-nova-dynamics/codex-image/releases/tag/v0.1.5
 [0.1.4]: https://github.com/nuko-nova-dynamics/codex-image/releases/tag/v0.1.4

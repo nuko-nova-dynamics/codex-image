@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: amended by 0002
 date: 2026-08-21
 ---
 
+
 # Request transparency in the prompt, with `background: "auto"`
+
+> **Amended 2026-11-06 by [ADR-0002](./0002-use-the-images-api.md).** This record describes the removed Codex Responses transport. On the Images API the skill sends `background: "transparent"`, which is accepted there, and keeps this ADR's prompt sentence, which is still what produces usable alpha.
 
 The image model behind the Codex OAuth transport can return a genuine alpha channel, but it refuses to be *told* to via the `background` request parameter. So we send `background: "auto"` and ask for transparency in the prompt text instead; the backend reads the prompt, resolves `auto` to `transparent`, and returns RGBA.
 

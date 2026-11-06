@@ -1,6 +1,8 @@
 """Main entrypoint for the codex-image skill.
 
-Composes auth.py + api_client.py + sse_parser.py + naming.py + sidecar.py.
+Composes auth.py + api_client.py + codex_route.py + naming.py + sidecar.py.
+Requests go to the Images API (`images/generations`, `images/edits`) on the
+route Codex itself uses, the same way Codex's built-in image tool calls it.
 """
 from __future__ import annotations
 
@@ -23,9 +25,8 @@ import naming
 import redact
 import retry as retry_mod
 import sidecar
-import sse_parser
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 class CodexCliError(RuntimeError):
@@ -104,26 +105,35 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def post_responses(
+def post_images(
     *,
     body: dict,
     headers: dict[str, str],
-    endpoint: str = api_client.DEFAULT_ENDPOINT,
+    endpoint: str,
     timeout: int = 300,
-) -> str:
-    """POST to the Codex backend, return the full SSE body as text.
+) -> dict:
+    """POST to the Images API and return the decoded JSON response.
 
-    Uses urllib (stdlib only) to keep dependencies minimal.
+    Uses urllib (stdlib only) to keep dependencies minimal. The ImageGen
+    request ID header, when present, is added to the result as `_request_id`.
     """
     data = json.dumps(body).encode()
     req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="replace")
+            raw = resp.read().decode("utf-8", errors="replace")
+            request_id = resp.headers.get("x-codex-imagegen-request-id")
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", errors="replace")
         e.body_text = body_text  # type: ignore[attr-defined]
         raise
+    try:
+        parsed = json.loads(raw)
+    except ValueError as e:
+        raise api_client.ParseError(f"response was not JSON: {raw[:200]}") from e
+    if isinstance(parsed, dict) and request_id:
+        parsed["_request_id"] = request_id
+    return parsed
 
 
 def _whole_version(version: str) -> str:
@@ -143,64 +153,51 @@ def fetch_models(
         return api_client.model_ids(json.loads(resp.read().decode("utf-8")))
 
 
-def _cached_models(cli_version: str) -> list[dict]:
-    """Codex's own on-disk copy of the catalog (refreshed whenever Codex runs).
-
-    Like Codex, trust it only when the installed Codex version wrote it; a cache
-    left by an older Codex can still list models that have since retired.
-    """
-    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    try:
-        cache = json.loads((home / "models_cache.json").read_text())
-    except (OSError, ValueError):
-        return []
-    if not isinstance(cache, dict) or cache.get("client_version") != _whole_version(cli_version):
-        return []
-    return api_client.model_ids(cache)
-
-
-def resolve_orchestrator(
+def resolve_image_model(
     explicit: str | None, *, route: codex_route.Route, headers: dict[str, str],
-    cli_version: str, config_model: str | None = None,
+    cli_version: str,
 ) -> tuple[str | None, str]:
-    """Return (model, source). An explicit choice wins. Otherwise use the newest
-    Sol-tier model the route lists, then Codex's configured model, then the
-    catalog's top-ranked model. No model is pinned here: models retire."""
+    """Return (model, source) for the request's `model` field.
+
+    An explicit choice wins. On the ChatGPT route the field is left out, as the
+    backend picks the image model itself. A proxy route needs a model to send
+    the request to its Images API path, so take the newest `gpt-image-*` model
+    the proxy lists. No model is pinned here: models retire.
+    """
     if explicit:
-        return explicit, "--orchestrator"
-    failure, source, models = "returned no models", "model list", []
+        return explicit, "--image-model"
+    if route.kind == "chatgpt":
+        return None, "chosen by the backend"
     try:
         models = fetch_models(route=route, headers=headers, cli_version=cli_version)
     except urllib.error.HTTPError as e:
-        failure = f"HTTP {e.code}"
+        return None, f"HTTP {e.code}"
     except (OSError, http.client.HTTPException, ValueError) as e:
         reason = getattr(e, "reason", None) or e
-        failure = f"{type(e).__name__}: {redact.redact_text(str(reason))}"
-    if not models and route.kind == "chatgpt":
-        models, source = _cached_models(cli_version), "Codex models_cache.json"
-    if model := api_client.newest_sol_model(models):
-        return model, f"newest Sol model in the {source}"
-    if config_model:
-        return config_model, "Codex config model"
-    if model := api_client.codex_default_model(models):
-        return model, f"top model in the {source}"
-    return None, failure
+        return None, f"{type(e).__name__}: {redact.redact_text(str(reason))}"
+    if model := api_client.newest_image_model(models):
+        return model, "newest gpt-image model in the model list"
+    return None, "the model list has no gpt-image model"
 
 
 def _post_with_error_handling(
     *, body: dict, headers: dict[str, str], route: codex_route.Route,
-) -> tuple[str | None, int | None]:
-    """POST + retry. Returns (sse_text, None) on success, or (None, exit_code) on terminal HTTP error.
+) -> tuple[dict | None, int | None]:
+    """POST + retry. Returns (response, None) on success, or (None, exit_code) on terminal error.
 
-    Centralises HTTPError reporting so all POST sites (initial call + empty-SSE
+    Centralises error reporting so all POST sites (initial call + empty-image
     retry) surface 401/4xx/5xx with a clean redacted message instead of a raw
     traceback.
     """
+    endpoint = route.url(api_client.endpoint_path(body))
     try:
-        sse = retry_mod.call_with_retries(
-            lambda: post_responses(body=body, headers=headers, endpoint=route.responses_url)
+        resp = retry_mod.call_with_retries(
+            lambda: post_images(body=body, headers=headers, endpoint=endpoint)
         )
-        return sse, None
+        return resp, None
+    except api_client.ParseError as e:
+        print(f"✗ {redact.redact_text(str(e))}", file=sys.stderr)
+        return None, 1
     except urllib.error.HTTPError as e:
         msg = redact.redact_text(getattr(e, "body_text", str(e)))
         print(f"✗ HTTP {e.code}: {msg}", file=sys.stderr)
@@ -219,32 +216,43 @@ def _post_with_error_handling(
         return None, 1
 
 
+# Flags that configured the removed Responses transport. They are still parsed
+# so existing invocations keep working, but have no effect.
+_DEPRECATED_NOOP_FLAGS = ("orchestrator", "effort")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     import validation
 
     p = argparse.ArgumentParser(
         prog="codex-image",
-        description="Generate images with GPT Image via ChatGPT OAuth.",
+        description="Generate or edit images through the Images API on the route "
+                    "Codex uses (ChatGPT sign-in, a relay, or a proxy).",
     )
     p.add_argument("prompt", help="Text prompt")
 
-    # Image-tool params
+    # Request fields
     def _size_type(v: str) -> str:
         try:
             return validation.validate_size(v)
         except validation.SizeError as e:
             raise argparse.ArgumentTypeError(str(e)) from e
-    p.add_argument("--size", type=_size_type,
-                   default=os.environ.get("CODEX_IMAGE_SIZE", "1024x1024"))
-    p.add_argument("--quality", default=os.environ.get("CODEX_IMAGE_QUALITY", "high"),
-                   choices=["low", "medium", "high", "xhigh", "max", "auto"])
-    p.add_argument("--image-model", default=None,
-                   choices=["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"],
-                   help="Request an image model (experimental on Codex OAuth; "
-                        "the endpoint may override it). Omit for backend selection.")
+    p.add_argument("--size", type=_size_type, default=os.environ.get("CODEX_IMAGE_SIZE"),
+                   help="Requested size, sent as `size`. The ChatGPT backend currently picks "
+                        "the size from the prompt and ignores this; describe the aspect ratio "
+                        "in the prompt instead (for example 'square 1:1').")
+    p.add_argument("--quality", default=os.environ.get("CODEX_IMAGE_QUALITY"),
+                   choices=["low", "medium", "high", "auto", "xhigh", "max"],
+                   help="Requested quality, sent as `quality` (xhigh/max are sent as high). "
+                        "The ChatGPT backend currently picks quality itself.")
+    p.add_argument("--image-model", default=os.environ.get("CODEX_IMAGE_MODEL"),
+                   help="Image model sent as `model`. Omit it: on ChatGPT the backend picks "
+                        "the model; on a proxy the newest gpt-image model it lists is used.")
     p.add_argument("--format", dest="output_format",
                    default=os.environ.get("CODEX_IMAGE_FORMAT", "png"),
-                   choices=["png", "jpeg", "webp"])
+                   choices=["png", "jpeg", "webp"],
+                   help="File format to save. The backend returns PNG; jpeg and webp are "
+                        "converted locally and need Pillow.")
 
     def _comp(name):
         def _t(v: str) -> int:
@@ -258,12 +266,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--moderation", default="auto", choices=["auto", "low"])
     p.add_argument("--background", default="opaque",
                    choices=["opaque", "auto", "transparent"],
-                   help="Raw passthrough to the image tool. 'transparent' is rejected "
-                        "by this backend (docs/adr/0001); use --transparent instead.")
+                   help="Sent as `background`. 'transparent' equals --transparent.")
     p.add_argument("--transparent", action="store_true",
                    help="Produce a real alpha channel (native by default)")
     p.add_argument("--transparent-mode", default=None, choices=["native", "chroma"],
-                   help="native (default): ask the model for alpha, no Pillow needed. "
+                   help="native (default): background=transparent plus one prompt sentence; no Pillow needed. "
                         "chroma: flat key plate + local removal (needs Pillow).")
     p.add_argument("--key-color", default="auto",
                    help="auto or hex like #00ff00 (chroma mode only)")
@@ -277,13 +284,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--edge-feather", type=float, default=None, metavar="RADIUS",
                    help="Chroma removal: soften the alpha edge; for stair-stepped edges on matte subjects (0-64)")
 
-    # Orchestrator params
-    p.add_argument("--orchestrator", default=os.environ.get("CODEX_IMAGE_ORCHESTRATOR"),
-                   help="Model that calls the image tool. Omit to use Codex's current "
-                        "default for this account.")
-    p.add_argument("--effort", default="xhigh",
-                   choices=["low", "medium", "high", "xhigh"],
-                   help="(minimal/none rejected by backend for image_gen)")
+    # Deprecated: the Responses transport is gone, so there is no chat model.
+    p.add_argument("--orchestrator", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--effort", default=None, help=argparse.SUPPRESS)
 
     # I/O
     p.add_argument("--out", default=None)
@@ -305,14 +308,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
 
+    for flag in _DEPRECATED_NOOP_FLAGS:
+        if getattr(args, flag) is not None:
+            print(f"⚠ --{flag} is deprecated and ignored: images are generated through the "
+                  "Images API, which has no chat model.", file=sys.stderr)
+
+    # --background transparent is the same request as --transparent (native).
+    if args.background == "transparent" and not args.transparent_mode:
+        args.transparent = True
+
     # --transparent-mode and --bg-tool are only meaningful alongside --transparent.
     # Treat either as opting in, so they can never be silently inert (which used
     # to spend a generation and return an opaque image with no warning).
     is_transparent = bool(args.transparent or args.transparent_mode or args.bg_tool)
 
     # Resolve the transparency path. Explicit --transparent-mode wins; an
-    # explicit --bg-tool opts into the legacy chroma path (back-compat for
-    # invocations written before native transparency existed); else native.
+    # explicit --bg-tool opts into the chroma path (back-compat for invocations
+    # written before native transparency existed); else native.
     if args.transparent_mode:
         transparent_mode = args.transparent_mode
     elif args.bg_tool is not None:
@@ -327,11 +339,9 @@ def main(argv: list[str] | None = None) -> int:
               "Use --format png or --format webp.", file=sys.stderr)
         return 1
 
-    if is_transparent and args.background == "transparent":
-        print("✗ --transparent + --background transparent contradict each other. "
-              "--transparent sends background=auto (the only value that works on "
-              "this backend); --background transparent asks to send a value the "
-              "backend rejects. Pick one. See docs/adr/0001.", file=sys.stderr)
+    if args.background == "transparent" and transparent_mode == "chroma":
+        print("✗ --background transparent asks for native alpha, but --transparent-mode "
+              "chroma asks for a key plate. Pick one.", file=sys.stderr)
         return 1
 
     if is_transparent and transparent_mode == "chroma" and bg_tool == "adobe":
@@ -430,13 +440,7 @@ def main(argv: list[str] | None = None) -> int:
     import transparency
 
     effective_prompt = args.prompt
-    effective_background = args.background
-
-    if args.background == "transparent":
-        print('⚠ --background transparent is rejected by this backend ("Transparent '
-              'background is not supported for this model"). Passing it through '
-              "unchanged so you see the real error; use --transparent for a real "
-              "alpha channel.", file=sys.stderr)
+    effective_background = "auto" if args.background == "auto" else "opaque"
 
     if is_transparent and transparent_mode == "chroma" and bg_tool in ("auto", "chroma"):
         try:
@@ -445,17 +449,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"✗ {e}", file=sys.stderr)
             return 2
 
-    if args.output_format == "webp":
+    if args.output_format in ("webp", "jpeg"):
         try:
-            transparency.require_pillow_or_die("--format webp")
+            transparency.require_pillow_or_die(f"--format {args.output_format}")
         except transparency.ChromaKeyError as e:
             print(f"✗ {e}", file=sys.stderr)
             return 2
 
     if is_transparent and transparent_mode == "native":
-        # The prompt IS the mechanism: the backend resolves "auto" to
-        # "transparent" by reading it. Never send background="transparent".
-        effective_background = "auto"
+        # Both halves are needed: the parameter alone returns an almost uniform
+        # alpha channel; the prompt sentence is what clears the background.
+        effective_background = "transparent"
         effective_prompt = transparency.apply_native_transparency_suffix(args.prompt)
     elif is_transparent:
         key = (args.key_color if args.key_color != "auto"
@@ -465,6 +469,13 @@ def main(argv: list[str] | None = None) -> int:
         print("⚠ transparent-mode chroma: key plate + local removal, "
               "not the model's own alpha", file=sys.stderr)
         effective_prompt = transparency.apply_chroma_key_suffix(args.prompt, key)
+        effective_background = "opaque"
+
+    requested_quality = args.quality
+    if requested_quality in ("xhigh", "max"):
+        print(f"⚠ --quality {requested_quality} is not an Images API value; sending high.",
+              file=sys.stderr)
+        requested_quality = "high"
 
     if route.kind == "chatgpt":
         try:
@@ -480,47 +491,43 @@ def main(argv: list[str] | None = None) -> int:
     else:
         cli_version = ""
         headers = codex_route.provider_headers(route)
-    orchestrator, orchestrator_source = resolve_orchestrator(
-        args.orchestrator, route=route, headers=headers, cli_version=cli_version,
-        config_model=codex_config.get("model"))
-    if orchestrator is None:
-        print(f"✗ Could not pick a model: the model list request to {route.base_url} "
-              f"failed ({orchestrator_source}) and nothing else named one.", file=sys.stderr)
-        if orchestrator_source == "HTTP 401":
-            print("→ Run: codex login" if route.kind == "chatgpt" else
-                  f"→ Check the key for model_provider '{route.name}' in Codex's config.toml",
+    image_model, model_source = resolve_image_model(
+        args.image_model, route=route, headers=headers, cli_version=cli_version)
+    if image_model is None and route.kind == "provider":
+        print(f"✗ Could not pick an image model for model_provider '{route.name}': the model "
+              f"list request to {route.base_url} failed or listed none ({model_source}).",
+              file=sys.stderr)
+        if model_source == "HTTP 401":
+            print(f"→ Check the key for model_provider '{route.name}' in Codex's config.toml",
                   file=sys.stderr)
         else:
-            print("→ Run `codex` once to refresh its cache, or pass --orchestrator <model>.",
-                  file=sys.stderr)
+            print("→ Pass --image-model <model>, for example one your proxy lists under "
+                  "/models.", file=sys.stderr)
         return 1
     if args.verbose:
         print(f"  route            = {route.name} ({route.base_url})", file=sys.stderr)
-        print(f"  orchestrator     = {orchestrator} ({orchestrator_source})", file=sys.stderr)
+        print(f"  image_model      = {image_model or '(not sent)'} ({model_source})",
+              file=sys.stderr)
 
     body = api_client.build_body(
         prompt=effective_prompt,
-        size=args.size,
-        quality=args.quality,
-        output_format=args.output_format,
         background=effective_background,
+        size=args.size,
+        quality=requested_quality,
         moderation=args.moderation,
-        quality_jpeg=args.quality_jpeg,
+        model=image_model,
         input_images=resolved or None,
-        orchestrator_model=orchestrator,
-        image_model=args.image_model,
-        reasoning_effort=args.effort,
     )
 
     # 3. POST + parse
     started = time.monotonic()
-    sse, exit_code = _post_with_error_handling(body=body, headers=headers, route=route)
-    if sse is None:
+    resp, exit_code = _post_with_error_handling(body=body, headers=headers, route=route)
+    if resp is None:
         return exit_code or 1
 
     try:
-        b64, source = sse_parser.extract_image_b64(sse)
-    except sse_parser.ParseError as first_err:
+        b64, meta = api_client.extract_image(resp)
+    except api_client.ParseError as first_err:
         if "no image" not in str(first_err):
             print(f"✗ {redact.redact_text(str(first_err))}", file=sys.stderr)
             return 1
@@ -528,27 +535,26 @@ def main(argv: list[str] | None = None) -> int:
             print("✗ Edit produced no image; re-run the edit to try again.", file=sys.stderr)
             return 1
         print("⚠ first call returned no image; retrying once…", file=sys.stderr)
-        sse, exit_code = _post_with_error_handling(body=body, headers=headers, route=route)
-        if sse is None:
+        resp, exit_code = _post_with_error_handling(body=body, headers=headers, route=route)
+        if resp is None:
             return exit_code or 1
         try:
-            b64, source = sse_parser.extract_image_b64(sse)
-        except sse_parser.ParseError as e:
+            b64, meta = api_client.extract_image(resp)
+        except api_client.ParseError as e:
             print(f"✗ {redact.redact_text(str(e))}", file=sys.stderr)
             return 1
+    request_id = resp.get("_request_id")
 
-    meta = sse_parser.extract_response_metadata(sse)
-
-    if args.image_model and meta.get("image_model") != args.image_model:
-        resolved_model = redact.redact_text(str(meta.get("image_model") or "unreported"))
-        print(f"⚠ Requested image model {args.image_model}; endpoint reported "
-              f"{resolved_model}. Requested model use is not verified.", file=sys.stderr)
+    for asked, got, label in ((args.size, meta.get("resolved_size"), "size"),
+                              (requested_quality, meta.get("resolved_quality"), "quality")):
+        if asked and asked != "auto" and got and asked != got:
+            print(f"⚠ Requested {label} {asked}; the backend returned {got}. "
+                  f"It picks the {label} from the prompt.", file=sys.stderr)
 
     if args.verbose:
-        print(f"  image_model      = {redact.redact_text(str(meta.get('image_model')))}",
-              file=sys.stderr)
         # meta values are server-derived; redact before printing (spec: token-safe diagnostics)
-        print(f"  response_id      = {meta.get('response_id')}", file=sys.stderr)
+        print(f"  generation_id    = {meta.get('generation_id')}", file=sys.stderr)
+        print(f"  request_id       = {request_id}", file=sys.stderr)
         print(f"  resolved_size    = {meta.get('resolved_size')}", file=sys.stderr)
         print(f"  resolved_quality = {meta.get('resolved_quality')}", file=sys.stderr)
         if rp := meta.get("revised_prompt"):
@@ -621,13 +627,14 @@ def main(argv: list[str] | None = None) -> int:
             stage_path.unlink(missing_ok=True)
     else:
         # Native transparency and ordinary generation both save the returned
-        # bytes directly; postprocess handles png/jpeg/webp encoding.
+        # bytes; postprocess converts the PNG for jpeg and webp.
         try:
             postprocess.save_image(
                 raw_bytes=raw,
                 target_path=target,
                 format=args.output_format,
                 webp_quality=args.quality_webp,
+                jpeg_quality=args.quality_jpeg,
             )
         except postprocess.PostprocessError as e:
             print(f"✗ {e}", file=sys.stderr)
@@ -638,9 +645,7 @@ def main(argv: list[str] | None = None) -> int:
         # a backdrop. Warn and keep the image — it is already paid for.
         #
         # Primary signal is the backend's own resolved background, which is free
-        # and needs no imaging library. That matters: the native path advertises
-        # itself as stdlib-only, so a Pillow-gated check would be silently absent
-        # on exactly the configuration this release recommends.
+        # and needs no imaging library; the Pillow check refines it when present.
         resolved_bg = meta.get("resolved_background")
         summary = transparency.alpha_summary(raw)  # refinement; None without Pillow
         if resolved_bg == "opaque" or (summary is not None and not summary["has_alpha"]):
@@ -663,25 +668,27 @@ def main(argv: list[str] | None = None) -> int:
         image_path=str(target.absolute()),
         prompt=args.prompt,
         revised_prompt=meta.get("revised_prompt") or "",
-        size=args.size,
-        quality=args.quality,
+        size=args.size or "auto",
+        quality=requested_quality or "auto",
         format=args.output_format,
         is_transparent=is_transparent,
         input_image=_sidecar_safe_ref(unique_originals[0]) if unique_originals else None,
-        response_id=meta.get("response_id") or "",
+        response_id=meta.get("generation_id") or request_id or "",
         ts=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         account_id=af.account_id if af else f"provider:{route.name}",
-        image_model=meta.get("image_model"),
-        requested_image_model=args.image_model,
+        image_model=None,
+        requested_image_model=image_model,
         resolved_quality=meta.get("resolved_quality"),
         resolved_background=meta.get("resolved_background"),
+        resolved_size=meta.get("resolved_size"),
         transparency_mode=transparent_mode if is_transparent else None,
     )
     last_path = _codex_image_home() / "last.json"
     sidecar.write_record(record, last_path,
                          per_image=not args.no_meta, update_last=not args.no_meta)
 
-    print(f"✓ {target}  ({target.stat().st_size} bytes, {elapsed:.1f}s, source={source})")
+    print(f"✓ {target}  ({target.stat().st_size} bytes, {elapsed:.1f}s, "
+          f"size={meta.get('resolved_size') or 'unknown'})")
     return 0
 
 

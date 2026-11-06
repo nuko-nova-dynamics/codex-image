@@ -2,18 +2,9 @@ from __future__ import annotations
 
 import re
 
-from sse_parser import extract_response_metadata
 
-
-def test_extract_metadata_pulls_revised_prompt(fixture_dir):
-    raw = (fixture_dir / "sse_completed.txt").read_text()
-    meta = extract_response_metadata(raw)
-    assert meta["response_id"] == "resp_1"
-    assert meta["revised_prompt"] == "A red circle"
-    assert meta["resolved_size"] == "1024x1024"
-
-
-def test_verbose_output_contains_no_token_substrings(tmp_path, fixture_dir, monkeypatch, capsys):
+def test_verbose_output_contains_no_token_substrings(tmp_path, fixture_dir, monkeypatch, capsys,
+                                                     fake_images_response):
     """Smoke: --verbose dump must redact any access_token / refresh_token / Bearer."""
     import generate
 
@@ -23,50 +14,16 @@ def test_verbose_output_contains_no_token_substrings(tmp_path, fixture_dir, monk
     monkeypatch.setenv("CODEX_HOME", str(home))
     monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
 
-    import base64
-    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
-    monkeypatch.setattr(generate, "post_responses", lambda **kw:
-        f'event: response.created\ndata: {{"type":"response.created","response":{{"id":"r"}}}}\n\n'
-        f'event: response.output_item.done\ndata: {{"type":"response.output_item.done","item":{{"id":"i","type":"image_generation_call","status":"completed","result":"{fake_b64}","revised_prompt":"X","quality":"medium","size":"1024x1024","output_format":"png","background":"opaque","action":"generate"}}}}\n\n'
-    )
+    resp = fake_images_response()
+    resp["data"][0]["revised_prompt"] = "X with Bearer eyJabc.def.ghi"
+    monkeypatch.setattr(generate, "post_images", lambda **kw: resp)
 
-    result = generate.main([
-        "x", "--verbose", "--quality", "low",
-        "--out-dir", str(tmp_path / "out"),
-    ])
+    result = generate.main(["x", "--verbose", "--out-dir", str(tmp_path / "out")])
     assert result == 0
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    # Validate redaction: none of the secret prefixes should leak
+    assert "generation_id    = g1" in combined
+    assert "resolved_size    = 1536x1024" in combined
     assert "Bearer eyJ" not in combined
     forbidden = re.compile(r"(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)")
     assert not forbidden.search(combined), f"JWT-like substring leaked: {forbidden.search(combined).group()}"
-
-
-def test_completed_metadata_overrides_created_model_and_handles_output():
-    import json
-
-    events = [
-        {"type": "response.created", "response": {
-            "tools": [{"type": "image_generation", "model": "gpt-image-2.5-flare"}]}},
-        {"type": "response.completed", "response": {
-            "tools": [{"type": "image_generation", "model": "gpt-image-2-codex"}],
-            "output": [{"type": "image_generation_call", "quality": "low",
-                        "size": "1254x1254", "background": "opaque"}]}},
-    ]
-    meta = extract_response_metadata("".join(f"data: {json.dumps(ev)}\n\n" for ev in events))
-    assert meta["image_model"] == "gpt-image-2-codex"
-    assert meta["resolved_quality"] == "low"
-    assert meta["resolved_size"] == "1254x1254"
-
-
-def test_partial_image_fallback_keeps_reported_quality():
-    import json
-
-    events = [
-        {"type": "response.image_generation_call.partial_image",
-         "partial_image_b64": "UEFSVElBTA==", "partial_image_index": 0, "quality": "medium"},
-        {"type": "response.completed", "response": {"output": []}},
-    ]
-    meta = extract_response_metadata("".join(f"data: {json.dumps(ev)}\n\n" for ev in events))
-    assert meta["resolved_quality"] == "medium"

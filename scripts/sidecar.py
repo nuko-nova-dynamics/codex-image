@@ -22,14 +22,16 @@ class GenerationRecord:
     response_id: str
     ts: str
     account_id: str
-    # Observed from the response, never copied from the requested model.
-    # `resolved_background` is how a native
-    # transparency run is confirmed (we send "auto", it answers "transparent").
+    # Observed from the response, never copied from the request. The Images API
+    # does not report the image model, so `image_model` stays None. A native
+    # transparency run is confirmed by `resolved_background == "transparent"`.
+    # `response_id` holds the per-image generation ID (or the request ID).
     image_model: str | None = None
     resolved_background: str | None = None
     transparency_mode: str | None = None
     requested_image_model: str | None = None
     resolved_quality: str | None = None
+    resolved_size: str | None = None
 
 
 def write_record(

@@ -1,29 +1,48 @@
 from __future__ import annotations
 
+import json
+
 import generate
 import pytest
+
+from tests.conftest import images_response
 
 
 def _parse(*args):
     return generate.parse_args(list(args))
 
 
-def test_orchestrator_is_unpinned(monkeypatch):
-    assert _parse("x").orchestrator is None
-    assert _parse("x", "--orchestrator", "any-future-model").orchestrator == "any-future-model"
-    monkeypatch.setenv("CODEX_IMAGE_ORCHESTRATOR", "from-env")
-    assert _parse("x").orchestrator == "from-env"
+def _chatgpt_home(tmp_path, fixture_dir, monkeypatch):
+    home = tmp_path / "codex-home"
+    home.mkdir(exist_ok=True)
+    (home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(generate, "_detect_codex_cli_version", lambda: "0.200.0")
+    return home
 
 
-def test_effort_default_xhigh_and_choices():
-    assert _parse("x").effort == "xhigh"
-    assert _parse("x", "--effort", "low").effort == "low"
-    assert _parse("x", "--effort", "medium").effort == "medium"
-    assert _parse("x", "--effort", "high").effort == "high"
-    with pytest.raises(SystemExit):
-        _parse("x", "--effort", "minimal")
-    with pytest.raises(SystemExit):
-        _parse("x", "--effort", "none")
+def _provider_home(tmp_path, monkeypatch):
+    home = tmp_path / "codex-home"
+    home.mkdir(exist_ok=True)
+    (home / "config.toml").write_text(
+        'model_provider = "proxy"\nmodel = "gpt-6-astra"\n'
+        '[model_providers.proxy]\nbase_url = "http://127.0.0.1:8317/v1"\n'
+        'experimental_bearer_token = "k-test"\nwire_api = "responses"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
+    return home
+
+
+def _capture_post(monkeypatch, response=None):
+    captured = {}
+
+    def fake_post(*, body, headers, endpoint, **kw):
+        captured.update(body=body, endpoint=endpoint, auth=headers.get("Authorization"))
+        return response if response is not None else images_response()
+
+    monkeypatch.setattr(generate, "post_images", fake_post)
+    return captured
 
 
 def test_moderation_default_auto_and_choices():
@@ -36,9 +55,7 @@ def test_moderation_default_auto_and_choices():
 def test_background_default_opaque_and_choices():
     assert _parse("x").background == "opaque"
     assert _parse("x", "--background", "auto").background == "auto"
-    # 0.2.0: accepted as a raw passthrough rather than rejected at parse time.
-    # The backend refuses it; we surface that error instead of substituting a
-    # different value behind the user's back. See docs/adr/0001.
+    # 0.3.0: the Images API honors it, so it is the same request as --transparent.
     assert _parse("x", "--background", "transparent").background == "transparent"
     with pytest.raises(SystemExit):
         _parse("x", "--background", "translucent")
@@ -66,53 +83,6 @@ def test_jpeg_compression_range_enforced(capsys):
         _parse("x", "--quality-jpeg", "150")
 
 
-def test_high_quality_does_not_claim_fixed_cap(tmp_path, fixture_dir, monkeypatch, capsys):
-    """A requested quality does not prove a fixed cap across models and plans."""
-    home = tmp_path / "fake-codex-home"
-    home.mkdir()
-    (home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
-
-    import base64
-    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
-    monkeypatch.setattr(generate, "post_responses", lambda **kw:
-        f'event: response.output_item.done\ndata: {{"type":"response.output_item.done","item":{{"id":"i","type":"image_generation_call","status":"completed","result":"{fake_b64}"}}}}\n\n'
-    )
-
-    rc = generate.main(["x", "--quality", "high", "--out-dir", str(tmp_path / "out")])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "caps to medium" not in err.lower()
-    assert "true high requires" not in err.lower()
-
-
-def test_orchestrator_passed_through_to_body(tmp_path, fixture_dir, monkeypatch):
-    home = tmp_path / "fake-codex-home"
-    home.mkdir()
-    (home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
-
-    import base64
-    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
-    captured = {}
-    def fake_post(*, body, headers, **kw):
-        captured["body"] = body
-        return f'event: response.output_item.done\ndata: {{"type":"response.output_item.done","item":{{"id":"i","type":"image_generation_call","status":"completed","result":"{fake_b64}"}}}}\n\n'
-    monkeypatch.setattr(generate, "post_responses", fake_post)
-
-    generate.main(["x", "--orchestrator", "explicit-model", "--effort", "low",
-                   "--moderation", "low", "--background", "auto",
-                   "--out-dir", str(tmp_path / "out"), "--quality", "low"])
-    body = captured["body"]
-    assert body["model"] == "explicit-model"
-    assert body["reasoning"] == {"effort": "low"}
-    tool = body["tools"][0]
-    assert tool["moderation"] == "low"
-    assert tool["background"] == "auto"
-
-
 def test_missing_codex_cli_fails_closed(
     tmp_path, fixture_dir, monkeypatch, capsys
 ):
@@ -134,7 +104,7 @@ def test_missing_codex_cli_fails_closed(
         raise AssertionError("request must not be sent without a detected CLI version")
 
     monkeypatch.setattr(subprocess, "run", missing)
-    monkeypatch.setattr(generate, "post_responses", post)
+    monkeypatch.setattr(generate, "post_images", post)
 
     result = generate.main([
         "x", "--out-dir", str(tmp_path / "out"), "--quality", "low",
@@ -158,106 +128,80 @@ def test_unparseable_codex_cli_version_fails_closed(monkeypatch):
         generate._detect_codex_cli_version()
 
 
-@pytest.mark.parametrize("quality", ["xhigh", "max"])
-def test_new_image_quality_choices(quality):
+def test_size_and_quality_default_to_omitted():
+    args = _parse("x")
+    assert args.size is None
+    assert args.quality is None
+
+
+@pytest.mark.parametrize("quality", ["low", "medium", "high", "auto", "xhigh", "max"])
+def test_quality_choices_accepted(quality):
     assert _parse("x", "--quality", quality).quality == quality
 
 
-@pytest.mark.parametrize("reported", ["gpt-image-2-codex", None, "gpt-image-2.5-flare"])
-def test_requested_model_is_separate_from_observed(tmp_path, fixture_dir, monkeypatch, capsys, reported):
-    import base64
-    import json
+def test_chatgpt_body_omits_model_size_and_quality(tmp_path, fixture_dir, monkeypatch):
+    _chatgpt_home(tmp_path, fixture_dir, monkeypatch)
 
-    home = tmp_path / "auth"
-    home.mkdir()
-    (home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
-    captured = {}
+    def no_list(**kw):
+        raise AssertionError("the ChatGPT route must not fetch a model list")
 
-    def fake_post(*, body, headers, **kwargs):
-        captured.update(body)
-        response = {"tools": [{"type": "image_generation", "model": reported}]}
-        item = {"type": "image_generation_call", "quality": "low",
-                "result": base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()}
-        return (f'event: response.created\ndata: {json.dumps({"type": "response.created", "response": response})}\n\n'
-                f'event: response.output_item.done\ndata: {json.dumps({"type": "response.output_item.done", "item": item})}\n\n')
+    monkeypatch.setattr(generate, "fetch_models", no_list)
+    captured = _capture_post(monkeypatch)
+    assert generate.main(["x", "--moderation", "low", "--background", "auto",
+                          "--out-dir", str(tmp_path / "out")]) == 0
+    assert captured["body"] == {"prompt": "x", "background": "auto", "moderation": "low"}
+    assert captured["endpoint"].endswith("/images/generations")
 
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+
+def test_deprecated_orchestrator_and_effort_warn_but_succeed(tmp_path, fixture_dir, monkeypatch, capsys):
+    _chatgpt_home(tmp_path, fixture_dir, monkeypatch)
+    captured = _capture_post(monkeypatch)
+    rc = generate.main(["x", "--orchestrator", "gpt-6.1-sol", "--effort", "low",
+                        "--out-dir", str(tmp_path / "out")])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "--orchestrator is deprecated and ignored" in err
+    assert "--effort is deprecated and ignored" in err
+    assert {"model", "reasoning"}.isdisjoint(captured["body"])
+
+
+@pytest.mark.parametrize("quality", ["xhigh", "max"])
+def test_xhigh_and_max_are_sent_as_high(tmp_path, fixture_dir, monkeypatch, capsys, quality):
+    _chatgpt_home(tmp_path, fixture_dir, monkeypatch)
+    captured = _capture_post(monkeypatch, images_response(quality="high"))
     target = tmp_path / "out.png"
-    assert generate.main(["x", "--image-model", "gpt-image-2.5-flare", "--quality", "max",
-                          "--out", str(target)]) == 0
-    assert captured["tools"][0]["model"] == "gpt-image-2.5-flare"
-    assert captured["tools"][0]["quality"] == "max"
+    assert generate.main(["x", "--quality", quality, "--out", str(target)]) == 0
+    assert captured["body"]["quality"] == "high"
+    assert f"--quality {quality} is not an Images API value; sending high" in capsys.readouterr().err
+    assert json.loads(target.with_suffix(".png.json").read_text())["quality"] == "high"
+
+
+def test_backend_overrides_of_size_and_quality_are_reported(tmp_path, fixture_dir, monkeypatch, capsys):
+    _chatgpt_home(tmp_path, fixture_dir, monkeypatch)
+    captured = _capture_post(monkeypatch, images_response(size="1536x1024", quality="low"))
+    target = tmp_path / "out.png"
+    assert generate.main(["x", "--size", "1024x1024", "--quality", "high", "--out", str(target)]) == 0
+    out, err = capsys.readouterr()
+    assert captured["body"]["size"] == "1024x1024"
+    assert "Requested size 1024x1024; the backend returned 1536x1024" in err
+    assert "Requested quality high; the backend returned low" in err
+    assert out.rstrip().endswith("size=1536x1024)")
+    record = json.loads(target.with_suffix(".png.json").read_text())
+    assert (record["size"], record["resolved_size"]) == ("1024x1024", "1536x1024")
+    assert (record["quality"], record["resolved_quality"]) == ("high", "low")
+    assert record["response_id"] == "g1"
+
+
+def test_explicit_image_model_is_sent_and_recorded_as_requested(tmp_path, fixture_dir, monkeypatch):
+    _chatgpt_home(tmp_path, fixture_dir, monkeypatch)
+    captured = _capture_post(monkeypatch)
+    target = tmp_path / "out.png"
+    assert generate.main(["x", "--image-model", "gpt-image-2.5-flare", "--out", str(target)]) == 0
+    assert captured["body"]["model"] == "gpt-image-2.5-flare"
     record = json.loads(target.with_suffix(".png.json").read_text())
     assert record["requested_image_model"] == "gpt-image-2.5-flare"
-    assert record["image_model"] == reported
-    assert record["quality"] == "max"
-    assert record["resolved_quality"] == "low"
-    assert ("Requested model use is not verified" in capsys.readouterr().err) == (
-        reported != "gpt-image-2.5-flare")
-
-
-def _run_capturing_model(tmp_path, fixture_dir, monkeypatch, *extra):
-    import base64
-    home = tmp_path / "codex-home"
-    home.mkdir(exist_ok=True)
-    (home / "auth.json").write_text((fixture_dir / "auth_chatgpt.json").read_text())
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
-    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
-    captured = {}
-
-    def fake_post(*, body, headers, **kw):
-        captured["model"] = body["model"]
-        return ('event: response.output_item.done\ndata: {"type":"response.output_item.done",'
-                f'"item":{{"type":"image_generation_call","result":"{fake_b64}"}}}}\n\n')
-
-    monkeypatch.setattr(generate, "post_responses", fake_post)
-    monkeypatch.setattr(generate, "_detect_codex_cli_version", lambda: "0.200.0-alpha.3")
-    rc = generate.main(["x", "--out-dir", str(tmp_path / "out"), *extra])
-    return rc, captured.get("model"), home
-
-
-def test_default_orchestrator_comes_from_codex_catalog(tmp_path, fixture_dir, monkeypatch):
-    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
-    assert rc == 0
-    assert model == "gpt-catalog-default"
-
-
-def test_cache_is_used_when_catalog_request_fails(tmp_path, fixture_dir, monkeypatch):
-    import json
-    import urllib.error
-
-    def offline(**kw):
-        raise urllib.error.URLError("offline")
-
-    monkeypatch.setattr(generate, "fetch_models", offline)
-    home = tmp_path / "codex-home"
-    home.mkdir()
-    (home / "models_cache.json").write_text(json.dumps({"client_version": "0.200.0", "models": [
-        {"slug": "cached-default", "priority": 1, "visibility": "list"}]}))
-    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
-    assert rc == 0
-    assert model == "cached-default"
-
-
-def test_cache_from_another_codex_version_is_ignored(tmp_path, fixture_dir, monkeypatch, capsys):
-    import http.client
-    import json
-
-    def truncated(**kw):
-        raise http.client.IncompleteRead(b"")
-
-    monkeypatch.setattr(generate, "fetch_models", truncated)
-    home = tmp_path / "codex-home"
-    home.mkdir()
-    (home / "models_cache.json").write_text(json.dumps({"client_version": "0.150.0", "models": [
-        {"slug": "retired-model", "priority": 1, "visibility": "list"}]}))
-    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
-    assert rc == 1
-    assert model is None
-    assert "--orchestrator" in capsys.readouterr().err
+    # The Images API does not report the model it used.
+    assert record["image_model"] is None
 
 
 def test_catalog_request_uses_whole_codex_version():
@@ -265,77 +209,80 @@ def test_catalog_request_uses_whole_codex_version():
     assert generate._whole_version("0.163.0") == "0.163.0"
 
 
-def test_no_catalog_and_no_cache_fails_before_posting(tmp_path, fixture_dir, monkeypatch, capsys):
-    import urllib.error
-
-    def offline(**kw):
-        raise urllib.error.URLError("offline")
-
-    monkeypatch.setattr(generate, "fetch_models", offline)
-    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
-    assert rc == 1
-    assert model is None
-    assert "--orchestrator" in capsys.readouterr().err
+def test_provider_route_needs_no_chatgpt_sign_in_and_picks_newest_image_model(tmp_path, monkeypatch):
+    _provider_home(tmp_path, monkeypatch)
+    captured = _capture_post(monkeypatch)
+    target = tmp_path / "out.png"
+    assert generate.main(["x", "--out", str(target)]) == 0
+    assert captured["body"]["model"] == "gpt-image-2.6"
+    assert captured["endpoint"] == "http://127.0.0.1:8317/v1/images/generations"
+    assert captured["auth"] == "Bearer k-test"
+    assert json.loads(target.with_suffix(".png.json").read_text())["account_id"] == "provider:proxy"
 
 
-def test_expired_token_on_catalog_says_to_log_in(tmp_path, fixture_dir, monkeypatch, capsys):
+def test_provider_route_explicit_image_model_skips_the_model_list(tmp_path, monkeypatch):
+    _provider_home(tmp_path, monkeypatch)
+
+    def no_list(**kw):
+        raise AssertionError("an explicit --image-model must not fetch the model list")
+
+    monkeypatch.setattr(generate, "fetch_models", no_list)
+    captured = _capture_post(monkeypatch)
+    assert generate.main(["x", "--image-model", "gpt-image-2", "--out-dir", str(tmp_path / "out")]) == 0
+    assert captured["body"]["model"] == "gpt-image-2"
+
+
+def test_provider_route_without_image_model_fails_before_posting(tmp_path, monkeypatch, capsys):
+    _provider_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(generate, "fetch_models", lambda **kw: [{"slug": "gpt-6.1-sol"}])
+    captured = _capture_post(monkeypatch)
+    assert generate.main(["x", "--out-dir", str(tmp_path / "out")]) == 1
+    err = capsys.readouterr().err
+    assert captured == {}
+    assert "Could not pick an image model for model_provider 'proxy'" in err
+    assert "the model list has no gpt-image model" in err
+    assert "--image-model" in err
+
+
+def test_provider_model_list_401_points_at_the_provider_key(tmp_path, monkeypatch, capsys):
     import io
     import urllib.error
 
+    _provider_home(tmp_path, monkeypatch)
+
     def expired(**kw):
-        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, io.BytesIO(b"token_expired"))
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, io.BytesIO(b"bad key"))
 
     monkeypatch.setattr(generate, "fetch_models", expired)
-    rc, model, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
+    assert generate.main(["x", "--out-dir", str(tmp_path / "out")]) == 1
     err = capsys.readouterr().err
-    assert rc == 1
-    assert model is None
     assert "HTTP 401" in err
-    assert "codex login" in err
+    assert "Check the key for model_provider 'proxy'" in err
 
 
-def test_network_failure_reason_is_reported(tmp_path, fixture_dir, monkeypatch, capsys):
+def test_provider_network_failure_reason_is_reported(tmp_path, monkeypatch, capsys):
     import urllib.error
+
+    _provider_home(tmp_path, monkeypatch)
 
     def no_dns(**kw):
         raise urllib.error.URLError("[Errno 8] nodename nor servname provided")
 
     monkeypatch.setattr(generate, "fetch_models", no_dns)
-    rc, _, _ = _run_capturing_model(tmp_path, fixture_dir, monkeypatch)
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "URLError: [Errno 8] nodename nor servname provided" in err
+    assert generate.main(["x", "--out-dir", str(tmp_path / "out")]) == 1
+    assert "URLError: [Errno 8] nodename nor servname provided" in capsys.readouterr().err
 
 
-def test_provider_route_needs_no_chatgpt_sign_in(tmp_path, monkeypatch):
-    import base64
-    import json
+@pytest.mark.parametrize("fmt", ["jpeg", "webp"])
+def test_jpeg_and_webp_need_pillow_before_the_paid_call(tmp_path, fixture_dir, monkeypatch, capsys, fmt):
+    import transparency
 
-    home = tmp_path / "codex-home"
-    home.mkdir()
-    (home / "config.toml").write_text(
-        'model_provider = "proxy"\nmodel = "gpt-6-astra"\n'
-        '[model_providers.proxy]\nbase_url = "http://127.0.0.1:8317/v1"\n'
-        'experimental_bearer_token = "k-test"\nwire_api = "responses"\n')
-    monkeypatch.setenv("CODEX_HOME", str(home))
-    monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr(generate, "fetch_models", lambda **kw: [
-        {"slug": s} for s in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-sol-latest")])
-    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
-    captured = {}
-
-    def fake_post(*, body, headers, endpoint, **kw):
-        captured.update(model=body["model"], endpoint=endpoint, auth=headers.get("Authorization"))
-        return ('event: response.output_item.done\ndata: {"type":"response.output_item.done",'
-                f'"item":{{"type":"image_generation_call","result":"{fake_b64}"}}}}\n\n')
-
-    monkeypatch.setattr(generate, "post_responses", fake_post)
-    target = tmp_path / "out.png"
-    assert generate.main(["x", "--out", str(target)]) == 0
-    assert captured == {"model": "gpt-6.1-sol",
-                        "endpoint": "http://127.0.0.1:8317/v1/responses",
-                        "auth": "Bearer k-test"}
-    assert json.loads(target.with_suffix(".png.json").read_text())["account_id"] == "provider:proxy"
+    _chatgpt_home(tmp_path, fixture_dir, monkeypatch)
+    monkeypatch.setattr(transparency, "pillow_available", lambda: False)
+    captured = _capture_post(monkeypatch)
+    assert generate.main(["x", "--format", fmt, "--out-dir", str(tmp_path / "out")]) == 2
+    assert captured == {}
+    assert f"Pillow is required for --format {fmt}" in capsys.readouterr().err
 
 
 def test_unreadable_codex_config_is_a_clean_error(tmp_path, monkeypatch, capsys):

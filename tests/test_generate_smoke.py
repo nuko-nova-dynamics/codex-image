@@ -1,4 +1,4 @@
-"""Integration test for generate.main, mocking only the HTTP call."""
+"""Integration tests for generate.main, mocking only the HTTP call."""
 from __future__ import annotations
 
 import base64
@@ -7,21 +7,15 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.conftest import images_response
+
 
 @pytest.fixture
-def fake_sse_with_image():
-    fake_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nFAKEPNGBYTES").decode()
-    return (
-        "event: response.created\n"
-        'data: {"type":"response.created","response":{"id":"resp_1"}}\n\n'
-        "event: response.output_item.done\n"
-        'data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call",'
-        f'"status":"completed","result":"{fake_b64}","quality":"medium","size":"1024x1024",'
-        '"output_format":"png","background":"opaque","action":"generate","revised_prompt":"X"}}\n\n'
-    )
+def fake_resp_with_image():
+    return images_response()
 
 
-def test_generate_writes_png_and_sidecar(tmp_path, fixture_dir, fake_sse_with_image, monkeypatch):
+def test_generate_writes_png_and_sidecar(tmp_path, fixture_dir, fake_resp_with_image, monkeypatch):
     import generate
 
     fake_home = tmp_path / "fake-codex-home"
@@ -32,7 +26,7 @@ def test_generate_writes_png_and_sidecar(tmp_path, fixture_dir, fake_sse_with_im
 
     out_dir = tmp_path / "out"
 
-    with patch.object(generate, "post_responses", return_value=fake_sse_with_image):
+    with patch.object(generate, "post_images", return_value=fake_resp_with_image):
         result = generate.main([
             "a small red circle",
             "--out-dir", str(out_dir),
@@ -47,9 +41,11 @@ def test_generate_writes_png_and_sidecar(tmp_path, fixture_dir, fake_sse_with_im
     assert sidecar.exists()
     data = json.loads(sidecar.read_text())
     assert data["prompt"] == "a small red circle"
+    assert data["resolved_size"] == "1536x1024"
+    assert data["response_id"] == "g1"
 
 
-def test_generate_edit_mode_passes_input_image(tmp_path, fixture_dir, fake_sse_with_image, monkeypatch):
+def test_generate_edit_mode_passes_input_image(tmp_path, fixture_dir, fake_resp_with_image, monkeypatch):
     import generate
 
     fake_home = tmp_path / "fake-codex-home"
@@ -64,22 +60,23 @@ def test_generate_edit_mode_passes_input_image(tmp_path, fixture_dir, fake_sse_w
     captured = {}
     def fake_post(*, body, headers, endpoint=None, timeout=None):
         captured["body"] = body
-        return fake_sse_with_image
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+        captured["endpoint"] = endpoint
+        return fake_resp_with_image
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     result = generate.main([
         "make it bigger", "--input", str(src),
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ])
     assert result == 0
-    tool = captured["body"]["tools"][0]
-    assert tool["action"] == "edit"
-    user_content = captured["body"]["input"][0]["content"]
-    assert user_content[0]["type"] == "input_image"
-    assert user_content[0]["image_url"].startswith("data:image/png;base64,")
+    assert captured["endpoint"].endswith("/images/edits")
+    assert captured["body"]["prompt"] == "make it bigger"
+    images = captured["body"]["images"]
+    assert len(images) == 1
+    assert images[0]["image_url"].startswith("data:image/png;base64,")
 
 
-def test_generate_transparent_chroma_runs_post_process(tmp_path, fixture_dir, fake_sse_with_image, monkeypatch):
+def test_generate_transparent_chroma_runs_post_process(tmp_path, fixture_dir, fake_resp_with_image, monkeypatch):
     import generate
 
     fake_home = tmp_path / "fake-codex-home"
@@ -88,7 +85,7 @@ def test_generate_transparent_chroma_runs_post_process(tmp_path, fixture_dir, fa
     monkeypatch.setenv("CODEX_HOME", str(fake_home))
     monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
 
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: fake_sse_with_image)
+    monkeypatch.setattr(generate, "post_images", lambda **kw: fake_resp_with_image)
 
     import subprocess
 
@@ -123,7 +120,7 @@ def test_generate_transparent_chroma_runs_post_process(tmp_path, fixture_dir, fa
     assert "--edge-feather" not in seen["cmd"]
 
 
-def test_generate_transparent_edge_flags_pass_through(tmp_path, fixture_dir, fake_sse_with_image, monkeypatch):
+def test_generate_transparent_edge_flags_pass_through(tmp_path, fixture_dir, fake_resp_with_image, monkeypatch):
     import generate
 
     fake_home = tmp_path / "fake-codex-home"
@@ -132,7 +129,7 @@ def test_generate_transparent_edge_flags_pass_through(tmp_path, fixture_dir, fak
     monkeypatch.setenv("CODEX_HOME", str(fake_home))
     monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
 
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: fake_sse_with_image)
+    monkeypatch.setattr(generate, "post_images", lambda **kw: fake_resp_with_image)
 
     import subprocess
 
@@ -169,7 +166,7 @@ def test_generate_transparent_edge_flags_pass_through(tmp_path, fixture_dir, fak
 
 
 def test_generate_transparent_defaults_to_native_not_chroma(
-    tmp_path, fixture_dir, fake_sse_with_image, monkeypatch
+    tmp_path, fixture_dir, fake_resp_with_image, monkeypatch
 ):
     """Behaviour change in 0.2.0: bare --transparent asks the model for alpha
     instead of running the chroma-key post-process."""
@@ -181,7 +178,7 @@ def test_generate_transparent_defaults_to_native_not_chroma(
     monkeypatch.setenv("CODEX_HOME", str(fake_home))
     monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
 
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: fake_sse_with_image)
+    monkeypatch.setattr(generate, "post_images", lambda **kw: fake_resp_with_image)
 
     import subprocess
 
@@ -215,7 +212,7 @@ def test_generate_transparent_defaults_to_native_not_chroma(
 
 
 def test_generate_transparent_bg_tool_adobe_errors_in_shell(
-    tmp_path, fixture_dir, fake_sse_with_image, monkeypatch, capsys
+    tmp_path, fixture_dir, fake_resp_with_image, monkeypatch, capsys
 ):
     import generate
 
@@ -227,7 +224,7 @@ def test_generate_transparent_bg_tool_adobe_errors_in_shell(
 
     import transparency
     monkeypatch.setattr(transparency, "pillow_available", lambda: True)
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: fake_sse_with_image)
+    monkeypatch.setattr(generate, "post_images", lambda **kw: fake_resp_with_image)
 
     result = generate.main([
         "a mug", "--transparent", "--bg-tool", "adobe",
@@ -251,15 +248,15 @@ def test_empty_sse_retry_handles_401_on_second_call(tmp_path, fixture_dir, monke
     monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
 
     calls = {"n": 0}
-    empty_sse = "event: response.created\ndata: {}\n\n"
+    empty_resp = {"created": 1, "data": []}
     def fake_post(*, body, headers, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
-            return empty_sse  # triggers retry
+            return empty_resp  # triggers retry
         e = urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
         e.body_text = "auth expired"  # type: ignore[attr-defined]
         raise e
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     rc = generate.main([
         "x", "--out-dir", str(tmp_path / "out"), "--quality", "low",
@@ -271,7 +268,7 @@ def test_empty_sse_retry_handles_401_on_second_call(tmp_path, fixture_dir, monke
     assert calls["n"] == 2
 
 
-def test_sidecar_stores_original_ref_not_data_url(tmp_path, fixture_dir, fake_sse_with_image, monkeypatch):
+def test_sidecar_stores_original_ref_not_data_url(tmp_path, fixture_dir, fake_resp_with_image, monkeypatch):
     """Spec §9 + Codex review: sidecar must not bloat with base64 data URLs."""
     import json
 
@@ -285,7 +282,7 @@ def test_sidecar_stores_original_ref_not_data_url(tmp_path, fixture_dir, fake_ss
 
     src = tmp_path / "ref.png"
     src.write_bytes(b"\x89PNG\r\n\x1a\nFAKE" * 1000)  # bigger than slug-length
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: fake_sse_with_image)
+    monkeypatch.setattr(generate, "post_images", lambda **kw: fake_resp_with_image)
 
     result = generate.main([
         "edit", "--input", str(src),
@@ -314,14 +311,14 @@ def test_empty_sse_edit_does_not_retry_without_refs(
     src = tmp_path / "ref.png"
     src.write_bytes(b"\x89PNG\r\n\x1a\nFAKE")
 
-    empty_sse = "event: response.created\ndata: {}\n\n"
+    empty_resp = {"created": 1, "data": []}
 
     calls = {"n": 0, "bodies": []}
     def fake_post(*, body, headers, **kw):
         calls["n"] += 1
         calls["bodies"].append(body)
-        return empty_sse
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+        return empty_resp
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     result = generate.main([
         "make it cool", "--input", str(src),
@@ -329,8 +326,7 @@ def test_empty_sse_edit_does_not_retry_without_refs(
     ])
     assert result != 0
     assert calls["n"] == 1
-    refs1 = [c for c in calls["bodies"][0]["input"][0]["content"] if c["type"] == "input_image"]
-    assert len(refs1) == 1
+    assert len(calls["bodies"][0]["images"]) == 1
     err = capsys.readouterr().err.lower()
     assert "edit produced no image" in err
     assert "re-run" in err
@@ -347,21 +343,17 @@ def test_empty_sse_reference_free_generation_retries_once(
     monkeypatch.setenv("CODEX_HOME", str(home))
     monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
 
-    img = base64.b64encode(b"\x89PNG\r\n\x1a\nNICE").decode()
-    success_sse = (
-        "event: response.output_item.done\n"
-        f'data: {{"type":"response.output_item.done","item":{{"id":"i","type":"image_generation_call","status":"completed","result":"{img}"}}}}\n\n'
-    )
-    empty_sse = "event: response.created\ndata: {}\n\n"
+    success_resp = images_response(base64.b64encode(b"\x89PNG\r\n\x1a\nNICE").decode())
+    empty_resp = {"created": 1, "data": []}
 
     calls = {"n": 0, "bodies": []}
 
     def fake_post(*, body, headers, **kw):
         calls["n"] += 1
         calls["bodies"].append(body)
-        return empty_sse if calls["n"] == 1 else success_sse
+        return empty_resp if calls["n"] == 1 else success_resp
 
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     result = generate.main([
         "make it cool", "--out-dir", str(tmp_path / "out"), "--quality", "low",
@@ -369,16 +361,12 @@ def test_empty_sse_reference_free_generation_retries_once(
     assert result == 0
     assert calls["n"] == 2
     for body in calls["bodies"]:
-        refs = [
-            item for item in body["input"][0]["content"]
-            if item["type"] == "input_image"
-        ]
-        assert refs == []
+        assert "images" not in body
 
 
-def test_incomplete_partial_stream_is_not_saved(
-    tmp_path, fixture_dir, monkeypatch, capsys
-):
+@pytest.mark.parametrize("bad", ["not-a-dict", "not-json"])
+def test_malformed_response_is_not_saved(tmp_path, fixture_dir, monkeypatch, capsys, bad):
+    import api_client
     import generate
     home = tmp_path / "fake-codex-home"
     home.mkdir()
@@ -386,23 +374,21 @@ def test_incomplete_partial_stream_is_not_saved(
     monkeypatch.setenv("CODEX_HOME", str(home))
     monkeypatch.setenv("CODEX_IMAGE_HOME", str(tmp_path / ".codex-image"))
 
-    incomplete_sse = (
-        "event: response.image_generation_call.partial_image\n"
-        'data: {"type":"response.image_generation_call.partial_image",'
-        '"partial_image_b64":"VFJVTkNBVEVE","partial_image_index":0}\n\n'
-    )
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: incomplete_sse)
+    def fake_post(**kw):
+        if bad == "not-json":
+            raise api_client.ParseError("response was not JSON: <html>gateway</html>")
+        return ["unexpected"]
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     out_dir = tmp_path / "out"
-    result = generate.main([
-        "x", "--out-dir", str(out_dir), "--quality", "low",
-    ])
+    result = generate.main(["x", "--out-dir", str(out_dir), "--quality", "low"])
     assert result != 0
-    assert "incomplete stream" in capsys.readouterr().err.lower()
+    err = capsys.readouterr().err.lower()
+    assert "not json" in err or "not a json object" in err
     assert not out_dir.exists()
 
 
-# --- native transparency (v0.2.0) -------------------------------------------
+# --- native transparency (v0.3.0: background=transparent + prompt sentence) -------------------------------------------
 
 def _png_b64(mode: str) -> str:
     """Real 8x8 PNG in the requested mode, base64-encoded."""
@@ -415,24 +401,8 @@ def _png_b64(mode: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def _sse(result_b64: str, *, background: str = "transparent",
-         model: str | None = "gpt-image-2-codex") -> str:
-    tools = (
-        f'"tools":[{{"type":"image_generation","background":"auto","model":"{model}"}}]'
-        if model else '"tools":[]'
-    )
-    return (
-        "event: response.created\n"
-        f'data: {{"type":"response.created","response":{{"id":"resp_9",{tools}}}}}\n\n'
-        "event: response.output_item.done\n"
-        'data: {"type":"response.output_item.done","item":{"id":"ig_9",'
-        '"type":"image_generation_call","status":"generating",'
-        f'"result":"{result_b64}","quality":"medium","size":"1536x1024",'
-        f'"output_format":"png","background":"{background}","action":"generate",'
-        '"revised_prompt":"X"}}\n\n'
-        "event: response.completed\n"
-        f'data: {{"type":"response.completed","response":{{"id":"resp_9","output":[],{tools}}}}}\n\n'
-    )
+def _resp(result_b64: str, *, background: str = "transparent") -> dict:
+    return images_response(result_b64, background=background, quality="medium")
 
 
 def _env(tmp_path, fixture_dir, monkeypatch):
@@ -460,11 +430,11 @@ def _no_chroma_subprocess(monkeypatch):
     return calls
 
 
-def test_transparent_sends_background_auto_and_appends_suffix(
+def test_transparent_sends_background_transparent_and_appends_suffix(
     tmp_path, fixture_dir, monkeypatch
 ):
-    """Native transparency is requested via background=auto plus a prompt
-    sentence. background=transparent 400s on this transport."""
+    """Native transparency needs both: background=transparent alone returns an
+    almost uniform alpha channel; the prompt sentence clears the background."""
     import generate
     import transparency
     _env(tmp_path, fixture_dir, monkeypatch)
@@ -474,18 +444,17 @@ def test_transparent_sends_background_auto_and_appends_suffix(
 
     def fake_post(*, body, headers, endpoint=None, timeout=None):
         captured["body"] = body
-        return _sse(_png_b64("RGBA"))
+        return _resp(_png_b64("RGBA"))
 
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     assert generate.main([
         "a red mug", "--transparent",
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ]) == 0
 
-    tool = captured["body"]["tools"][0]
-    assert tool["background"] == "auto"
-    text = captured["body"]["input"][0]["content"][-1]["text"]
+    assert captured["body"]["background"] == "transparent"
+    text = captured["body"]["prompt"]
     assert text.startswith("a red mug")
     assert text.endswith(transparency.NATIVE_TRANSPARENCY_SUFFIX)
 
@@ -508,7 +477,7 @@ def test_transparent_native_writes_returned_bytes_unmodified(
     _no_chroma_subprocess(monkeypatch)
 
     payload = _png_b64("RGBA")
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: _sse(payload))
+    monkeypatch.setattr(generate, "post_images", lambda **kw: _resp(payload))
 
     out_dir = tmp_path / "out"
     assert generate.main([
@@ -521,13 +490,13 @@ def test_transparent_native_writes_returned_bytes_unmodified(
     assert pngs[0].read_bytes() == base64.b64decode(payload)
 
 
-def test_sidecar_records_image_model_and_resolved_background(
+def test_sidecar_records_resolved_background_and_size(
     tmp_path, fixture_dir, monkeypatch
 ):
     import generate
     _env(tmp_path, fixture_dir, monkeypatch)
     _no_chroma_subprocess(monkeypatch)
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: _sse(_png_b64("RGBA")))
+    monkeypatch.setattr(generate, "post_images", lambda **kw: _resp(_png_b64("RGBA")))
 
     out_dir = tmp_path / "out"
     assert generate.main([
@@ -537,8 +506,10 @@ def test_sidecar_records_image_model_and_resolved_background(
 
     sidecar = next(out_dir.glob("*.png.json"))
     data = json.loads(sidecar.read_text())
-    assert data["image_model"] == "gpt-image-2-codex"
+    assert data["image_model"] is None  # the Images API does not report it
     assert data["resolved_background"] == "transparent"
+    assert data["resolved_size"] == "1536x1024"
+    assert data["transparency_mode"] == "native"
 
 
 def test_transparent_warns_when_result_has_no_alpha(
@@ -550,8 +521,8 @@ def test_transparent_warns_when_result_has_no_alpha(
     _env(tmp_path, fixture_dir, monkeypatch)
     _no_chroma_subprocess(monkeypatch)
     monkeypatch.setattr(
-        generate, "post_responses",
-        lambda **kw: _sse(_png_b64("RGB"), background="opaque"),
+        generate, "post_images",
+        lambda **kw: _resp(_png_b64("RGB"), background="opaque"),
     )
 
     out_dir = tmp_path / "out"
@@ -564,11 +535,13 @@ def test_transparent_warns_when_result_has_no_alpha(
     assert "transparent" in err and "alpha" in err
 
 
-def test_background_transparent_is_passed_through_unrewritten(
+def test_background_transparent_means_native_transparency(
     tmp_path, fixture_dir, monkeypatch, capsys
 ):
-    """Never silently substitute a value the user explicitly typed."""
+    """The Images API honors background=transparent, so the flag is now the
+    same request as --transparent instead of a value the backend refuses."""
     import generate
+    import transparency
     _env(tmp_path, fixture_dir, monkeypatch)
     _no_chroma_subprocess(monkeypatch)
 
@@ -576,16 +549,19 @@ def test_background_transparent_is_passed_through_unrewritten(
 
     def fake_post(*, body, headers, endpoint=None, timeout=None):
         captured["body"] = body
-        return _sse(_png_b64("RGBA"))
+        return _resp(_png_b64("RGBA"))
 
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
+    out_dir = tmp_path / "out"
     assert generate.main([
         "a red mug", "--background", "transparent",
-        "--out-dir", str(tmp_path / "out"), "--quality", "low",
+        "--out-dir", str(out_dir), "--quality", "low",
     ]) == 0
-    assert captured["body"]["tools"][0]["background"] == "transparent"
-    assert "--transparent" in capsys.readouterr().err
+    assert captured["body"]["background"] == "transparent"
+    assert captured["body"]["prompt"].endswith(transparency.NATIVE_TRANSPARENCY_SUFFIX)
+    data = json.loads(next(out_dir.glob("*.png.json")).read_text())
+    assert data["transparency_mode"] == "native"
 
 
 def test_transparent_mode_chroma_runs_post_process(
@@ -596,7 +572,13 @@ def test_transparent_mode_chroma_runs_post_process(
     import transparency
     _env(tmp_path, fixture_dir, monkeypatch)
     monkeypatch.setattr(transparency, "pillow_available", lambda: True)
-    monkeypatch.setattr(generate, "post_responses", lambda **kw: _sse(_png_b64("RGBA")))
+    sent = {}
+
+    def fake_post(*, body, headers, endpoint=None, timeout=None):
+        sent["body"] = body
+        return _resp(_png_b64("RGBA"), background="opaque")
+
+    monkeypatch.setattr(generate, "post_images", fake_post)
 
     import subprocess
     seen = {}
@@ -622,6 +604,9 @@ def test_transparent_mode_chroma_runs_post_process(
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ]) == 0
     assert "remove_chroma_key.py" in str(seen["cmd"][1])
+    assert sent["body"]["background"] == "opaque"
+    assert sent["body"]["prompt"].startswith("a leaf. ")
+    assert transparency.NATIVE_TRANSPARENCY_SUFFIX not in sent["body"]["prompt"]
 
 
 def test_transparent_mode_alone_implies_transparent(tmp_path, fixture_dir, monkeypatch):
@@ -635,40 +620,39 @@ def test_transparent_mode_alone_implies_transparent(tmp_path, fixture_dir, monke
 
     def fake_post(*, body, headers, endpoint=None, timeout=None):
         captured["body"] = body
-        return _sse(_png_b64("RGBA"))
+        return _resp(_png_b64("RGBA"))
 
-    monkeypatch.setattr(generate, "post_responses", fake_post)
+    monkeypatch.setattr(generate, "post_images", fake_post)
     _no_chroma_subprocess(monkeypatch)
 
     assert generate.main([
         "a red mug", "--transparent-mode", "native",
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ]) == 0
-    assert captured["body"]["tools"][0]["background"] == "auto"
-    text = captured["body"]["input"][0]["content"][-1]["text"]
-    assert text.endswith(transparency.NATIVE_TRANSPARENCY_SUFFIX)
+    assert captured["body"]["background"] == "transparent"
+    assert captured["body"]["prompt"].endswith(transparency.NATIVE_TRANSPARENCY_SUFFIX)
 
 
-def test_transparent_plus_background_transparent_is_rejected_before_post(
+def test_background_transparent_with_chroma_mode_is_rejected_before_post(
     tmp_path, fixture_dir, monkeypatch, capsys
 ):
-    """The two flags contradict each other; erroring beats printing a message
-    that says 'passed through unchanged' and then not doing that."""
+    """background=transparent asks for native alpha; chroma asks for a key
+    plate. Erroring beats silently dropping one of them."""
     import generate
     _env(tmp_path, fixture_dir, monkeypatch)
 
     def exploding_post(**kw):
         raise AssertionError("must not spend a generation on a contradictory request")
 
-    monkeypatch.setattr(generate, "post_responses", exploding_post)
+    monkeypatch.setattr(generate, "post_images", exploding_post)
 
     rc = generate.main([
-        "a red mug", "--transparent", "--background", "transparent",
+        "a red mug", "--background", "transparent", "--transparent-mode", "chroma",
         "--out-dir", str(tmp_path / "out"), "--quality", "low",
     ])
     assert rc == 1
     err = capsys.readouterr().err.lower()
-    assert "--transparent" in err and "--background transparent" in err
+    assert "--background transparent" in err and "chroma" in err
 
 
 def test_bg_tool_adobe_is_rejected_before_post(tmp_path, fixture_dir, monkeypatch, capsys):
@@ -679,7 +663,7 @@ def test_bg_tool_adobe_is_rejected_before_post(tmp_path, fixture_dir, monkeypatc
     def exploding_post(**kw):
         raise AssertionError("must not spend a generation before rejecting --bg-tool=adobe")
 
-    monkeypatch.setattr(generate, "post_responses", exploding_post)
+    monkeypatch.setattr(generate, "post_images", exploding_post)
 
     out_dir = tmp_path / "out"
     rc = generate.main([
@@ -700,8 +684,8 @@ def test_alpha_warning_works_without_pillow(tmp_path, fixture_dir, monkeypatch, 
     _no_chroma_subprocess(monkeypatch)
     monkeypatch.setattr(transparency, "pillow_available", lambda: False)
     monkeypatch.setattr(
-        generate, "post_responses",
-        lambda **kw: _sse(_png_b64("RGB"), background="opaque"),
+        generate, "post_images",
+        lambda **kw: _resp(_png_b64("RGB"), background="opaque"),
     )
 
     out_dir = tmp_path / "out"
