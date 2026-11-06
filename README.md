@@ -45,7 +45,7 @@ Either way, the skill auto-detects Codex CLI's auth at `~/.codex/auth.json`. Mak
 codex login
 ```
 
-Optional: `--format webp` and `--transparent-mode chroma` need Pillow (`python3 -m pip install 'Pillow>=10'`); everything else, including plain `--transparent`, is stdlib-only.
+Optional: `--format jpeg`, `--format webp` and `--transparent-mode chroma` need Pillow (`python3 -m pip install 'Pillow>=10'`); everything else, including plain `--transparent`, is stdlib-only.
 
 ## Quick start
 
